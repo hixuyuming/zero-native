@@ -1,0 +1,26 @@
+.{
+    .id = "dev.zero_native.browser",
+    .name = "browser",
+    .display_name = "Browser Example",
+    .version = "0.1.0",
+    .icons = .{ "assets/icon.icns" },
+    .platforms = .{ "macos", "linux", "windows" },
+    .permissions = .{ "window" },
+    .capabilities = .{ "webview", "js_bridge" },
+    .bridge = .{
+        .commands = .{
+            .{ .name = "zero-native.overlay.create", .permissions = .{ "window" }, .origins = .{ "zero://app" } },
+            .{ .name = "zero-native.overlay.setFrame", .permissions = .{ "window" }, .origins = .{ "zero://app" } },
+            .{ .name = "zero-native.overlay.navigate", .permissions = .{ "window" }, .origins = .{ "zero://app" } },
+            .{ .name = "zero-native.overlay.close", .permissions = .{ "window" }, .origins = .{ "zero://app" } },
+        },
+    },
+    .security = .{
+        .navigation = .{
+            .allowed_origins = .{ "*" },
+            .external_links = .{ .action = "deny" },
+        },
+    },
+    .web_engine = "system",
+    .cef = .{ .dir = "third_party/cef/macos", .auto_install = false },
+}

@@ -116,6 +116,8 @@ const app_permissions = [_][]const u8{zero_native.security.permission_window};
         .{ .name = "zero-native.window.list", .permissions = .{ "window" }, .origins = .{ "zero://app" } },
         .{ .name = "zero-native.window.create", .permissions = .{ "window" }, .origins = .{ "zero://app" } },
         .{ .name = "zero-native.overlay.create", .permissions = .{ "window" }, .origins = .{ "zero://app" } },
+        .{ .name = "zero-native.overlay.setFrame", .permissions = .{ "window" }, .origins = .{ "zero://app" } },
+        .{ .name = "zero-native.overlay.navigate", .permissions = .{ "window" }, .origins = .{ "zero://app" } },
         .{ .name = "zero-native.overlay.close", .permissions = .{ "window" }, .origins = .{ "zero://app" } },
         .{ .name = "zero-native.dialog.openFile", .origins = .{ "zero://app" } },
         .{ .name = "zero-native.dialog.showMessage", .origins = .{ "zero://app" } },
@@ -135,6 +137,7 @@ const win = await window.zero.windows.create({
 
 const preview = await window.zero.webviews.create({
   label: "preview",
+  windowId: win.id,
   url: "https://example.com",
   frame: { x: 24, y: 24, width: 480, height: 320 },
 });

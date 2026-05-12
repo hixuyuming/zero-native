@@ -20,6 +20,7 @@ pub const Error = error{
     DuplicateOverlayLabel,
     OverlayLabelTooLarge,
     OverlayUrlTooLarge,
+    NavigationDenied,
 };
 
 pub const WebEngine = enum {

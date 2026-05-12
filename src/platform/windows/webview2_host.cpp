@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <shellapi.h>
+#include <objbase.h>
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -7,6 +8,16 @@
 
 #include <map>
 #include <string>
+
+#if __has_include(<WebView2.h>) && __has_include(<wrl.h>)
+#include <WebView2.h>
+#include <wrl.h>
+#define ZERO_NATIVE_HAS_WEBVIEW2 1
+using Microsoft::WRL::Callback;
+using Microsoft::WRL::ComPtr;
+#else
+#define ZERO_NATIVE_HAS_WEBVIEW2 0
+#endif
 
 namespace {
 
@@ -57,6 +68,10 @@ struct Overlay {
     double y = 0;
     double width = 0;
     double height = 0;
+#if ZERO_NATIVE_HAS_WEBVIEW2
+    ComPtr<ICoreWebView2Controller> controller;
+    ComPtr<ICoreWebView2> webview;
+#endif
 };
 
 struct Host {
@@ -133,6 +148,9 @@ static void destroyOverlaysForWindow(Host *host, uint64_t window_id) {
     if (!host) return;
     for (auto it = host->overlays.begin(); it != host->overlays.end();) {
         if (it->second.window_id == window_id) {
+#if ZERO_NATIVE_HAS_WEBVIEW2
+            if (it->second.controller) it->second.controller->Close();
+#endif
             if (it->second.hwnd) DestroyWindow(it->second.hwnd);
             it = host->overlays.erase(it);
         } else {
@@ -140,6 +158,56 @@ static void destroyOverlaysForWindow(Host *host, uint64_t window_id) {
         }
     }
 }
+
+#if ZERO_NATIVE_HAS_WEBVIEW2
+using CreateEnvironmentFn = HRESULT (STDAPICALLTYPE *)(PCWSTR, PCWSTR, ICoreWebView2EnvironmentOptions *, ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler *);
+
+static RECT overlayRect(const Overlay &overlay) {
+    RECT rect = {};
+    rect.left = 0;
+    rect.top = 0;
+    rect.right = overlayExtent(overlay.width);
+    rect.bottom = overlayExtent(overlay.height);
+    return rect;
+}
+
+static CreateEnvironmentFn webView2Factory() {
+    static HMODULE loader = LoadLibraryW(L"WebView2Loader.dll");
+    if (!loader) return nullptr;
+    return reinterpret_cast<CreateEnvironmentFn>(GetProcAddress(loader, "CreateCoreWebView2EnvironmentWithOptions"));
+}
+
+static void createOverlayWebView(Host *host, const std::string &key) {
+    auto factory = webView2Factory();
+    if (!factory) return;
+    auto found = host->overlays.find(key);
+    if (found == host->overlays.end() || !found->second.hwnd) return;
+    HWND parent = found->second.hwnd;
+    std::wstring initial_url = widen(found->second.url);
+    factory(nullptr, nullptr, nullptr, Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+        [host, key, parent, initial_url](HRESULT result, ICoreWebView2Environment *environment) -> HRESULT {
+            if (FAILED(result) || !environment) return result;
+            return environment->CreateCoreWebView2Controller(parent, Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+                [host, key, initial_url](HRESULT controller_result, ICoreWebView2Controller *controller) -> HRESULT {
+                    if (FAILED(controller_result) || !controller) return controller_result;
+                    auto found = host->overlays.find(key);
+                    if (found == host->overlays.end()) {
+                        controller->Close();
+                        return S_OK;
+                    }
+                    found->second.controller = controller;
+                    controller->get_CoreWebView2(&found->second.webview);
+                    RECT bounds = overlayRect(found->second);
+                    controller->put_Bounds(bounds);
+                    controller->put_IsVisible(TRUE);
+                    if (found->second.webview && !initial_url.empty()) {
+                        found->second.webview->Navigate(initial_url.c_str());
+                    }
+                    return S_OK;
+                }).Get());
+        }).Get());
+}
+#endif
 
 static Host *hostFromWindow(HWND hwnd) {
     return reinterpret_cast<Host *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -390,12 +458,11 @@ int zero_native_windows_create_overlay(Host *host, uint64_t window_id, const cha
     if (host->overlays.find(key) != host->overlays.end()) return 0;
 
     std::string url_string = slice(url, url_len);
-    std::wstring title = widen(url_string);
     HWND hwnd = CreateWindowExW(
         0,
         L"STATIC",
-        title.c_str(),
-        WS_CHILD | WS_VISIBLE | WS_BORDER | SS_LEFT,
+        L"",
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
         overlayCoord(x),
         overlayCoord(y),
         overlayExtent(width),
@@ -416,6 +483,12 @@ int zero_native_windows_create_overlay(Host *host, uint64_t window_id, const cha
     overlay.width = width;
     overlay.height = height;
     host->overlays[key] = overlay;
+#if ZERO_NATIVE_HAS_WEBVIEW2
+    createOverlayWebView(host, key);
+#else
+    std::wstring title = widen(url_string);
+    SetWindowTextW(hwnd, title.c_str());
+#endif
     return 1;
 }
 
@@ -428,6 +501,12 @@ int zero_native_windows_set_overlay_frame(Host *host, uint64_t window_id, const 
     found->second.width = width;
     found->second.height = height;
     MoveWindow(found->second.hwnd, overlayCoord(x), overlayCoord(y), overlayExtent(width), overlayExtent(height), TRUE);
+#if ZERO_NATIVE_HAS_WEBVIEW2
+    if (found->second.controller) {
+        RECT bounds = overlayRect(found->second);
+        found->second.controller->put_Bounds(bounds);
+    }
+#endif
     return 1;
 }
 
@@ -436,6 +515,13 @@ int zero_native_windows_navigate_overlay(Host *host, uint64_t window_id, const c
     auto found = host->overlays.find(overlayKey(window_id, slice(label, label_len)));
     if (found == host->overlays.end() || !found->second.hwnd) return 0;
     found->second.url = slice(url, url_len);
+#if ZERO_NATIVE_HAS_WEBVIEW2
+    if (found->second.webview) {
+        std::wstring target = widen(found->second.url);
+        found->second.webview->Navigate(target.c_str());
+        return 1;
+    }
+#endif
     std::wstring title = widen(found->second.url);
     SetWindowTextW(found->second.hwnd, title.c_str());
     return 1;
@@ -445,6 +531,9 @@ int zero_native_windows_close_overlay(Host *host, uint64_t window_id, const char
     if (!host || label_len == 0) return 0;
     auto found = host->overlays.find(overlayKey(window_id, slice(label, label_len)));
     if (found == host->overlays.end()) return 0;
+#if ZERO_NATIVE_HAS_WEBVIEW2
+    if (found->second.controller) found->second.controller->Close();
+#endif
     if (found->second.hwnd) DestroyWindow(found->second.hwnd);
     host->overlays.erase(found);
     return 1;

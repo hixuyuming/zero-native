@@ -65,6 +65,7 @@ private:
 class ZeroNativeCefClient final : public CefClient, public CefLifeSpanHandler, public CefLoadHandler, public CefRequestHandler {
 public:
     explicit ZeroNativeCefClient(ZeroNativeChromiumHost *host, uint64_t window_id) : host_(host), window_id_(window_id) {}
+    ZeroNativeCefClient(ZeroNativeChromiumHost *host, uint64_t window_id, std::string overlay_key) : host_(host), window_id_(window_id), overlay_key_(overlay_key), bridge_enabled_(false) {}
 
     CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override {
         return this;
@@ -86,6 +87,8 @@ public:
 private:
     ZeroNativeChromiumHost *host_;
     uint64_t window_id_;
+    std::string overlay_key_;
+    bool bridge_enabled_ = true;
     IMPLEMENT_REFCOUNTING(ZeroNativeCefClient);
 };
 
@@ -344,6 +347,8 @@ static const char *ZeroNativeCefBridgeScript() {
 @property(nonatomic) CefRefPtr<CefBrowser> browser;
 @property(nonatomic, assign) std::map<uint64_t, CefRefPtr<ZeroNativeCefClient>> *cefClients;
 @property(nonatomic, assign) std::map<uint64_t, CefRefPtr<CefBrowser>> *browsers;
+@property(nonatomic, assign) std::map<std::string, CefRefPtr<ZeroNativeCefClient>> *overlayCefClients;
+@property(nonatomic, assign) std::map<std::string, CefRefPtr<CefBrowser>> *overlayBrowsers;
 @property(nonatomic, strong) NSArray<NSString *> *allowedNavigationOrigins;
 @property(nonatomic, strong) NSArray<NSString *> *allowedExternalURLs;
 @property(nonatomic, assign) NSInteger externalLinkAction;
@@ -374,6 +379,7 @@ static const char *ZeroNativeCefBridgeScript() {
 - (BOOL)closeOverlayInWindow:(uint64_t)windowId label:(NSString *)label;
 - (void)closeOverlaysInWindow:(uint64_t)windowId;
 - (void)setBrowser:(CefRefPtr<CefBrowser>)browser windowId:(uint64_t)windowId;
+- (void)setOverlayBrowser:(CefRefPtr<CefBrowser>)browser key:(NSString *)key;
 - (NSString *)fallbackURLForWindowId:(uint64_t)windowId;
 - (NSString *)bridgeOriginForWindowId:(uint64_t)windowId sourceURL:(NSString *)sourceURL;
 - (void)receiveBridgePayload:(NSString *)payload origin:(NSString *)origin windowId:(uint64_t)windowId;
@@ -444,6 +450,8 @@ static const char *ZeroNativeCefBridgeScript() {
     self.overlayViews = [[NSMutableDictionary alloc] init];
     self.cefClients = new std::map<uint64_t, CefRefPtr<ZeroNativeCefClient>>();
     self.browsers = new std::map<uint64_t, CefRefPtr<CefBrowser>>();
+    self.overlayCefClients = new std::map<std::string, CefRefPtr<ZeroNativeCefClient>>();
+    self.overlayBrowsers = new std::map<std::string, CefRefPtr<CefBrowser>>();
     self.allowedNavigationOrigins = @[ @"zero://app", @"zero://inline" ];
     self.allowedExternalURLs = @[];
     self.externalLinkAction = 0;
@@ -533,6 +541,8 @@ static const char *ZeroNativeCefBridgeScript() {
 }
 
 - (void)dealloc {
+    delete self.overlayCefClients;
+    delete self.overlayBrowsers;
     delete self.cefClients;
     delete self.browsers;
 }
@@ -785,15 +795,20 @@ static const char *ZeroNativeCefBridgeScript() {
     NSString *key = [self overlayKeyForWindow:windowId label:label];
     if (self.overlayViews[key]) return NO;
 
-    NSTextField *overlay = [NSTextField labelWithString:url];
+    NSView *overlay = [[NSView alloc] initWithFrame:[self overlayFrameForContainer:container x:x y:y width:width height:height]];
     overlay.frame = [self overlayFrameForContainer:container x:x y:y width:width height:height];
     overlay.autoresizingMask = NSViewNotSizable;
-    overlay.bezeled = YES;
-    overlay.drawsBackground = YES;
-    overlay.backgroundColor = NSColor.windowBackgroundColor;
-    overlay.lineBreakMode = NSLineBreakByTruncatingMiddle;
     [container addSubview:overlay positioned:NSWindowAbove relativeTo:nil];
     self.overlayViews[key] = overlay;
+
+    std::string keyString(key.UTF8String);
+    CefRefPtr<ZeroNativeCefClient> client = new ZeroNativeCefClient(self, windowId, keyString);
+    if (self.overlayCefClients) (*self.overlayCefClients)[keyString] = client;
+    CefWindowInfo windowInfo;
+    CefRect rect(0, 0, overlay.bounds.size.width, overlay.bounds.size.height);
+    windowInfo.SetAsChild((__bridge void *)overlay, rect);
+    CefBrowserSettings browserSettings;
+    CefBrowserHost::CreateBrowser(windowInfo, client.get(), std::string(url.UTF8String), browserSettings, nullptr, nullptr);
     return YES;
 }
 
@@ -803,6 +818,11 @@ static const char *ZeroNativeCefBridgeScript() {
     NSView *overlay = self.overlayViews[[self overlayKeyForWindow:windowId label:label]];
     if (!container || !overlay) return NO;
     overlay.frame = [self overlayFrameForContainer:container x:x y:y width:width height:height];
+    std::string keyString([self overlayKeyForWindow:windowId label:label].UTF8String);
+    if (self.overlayBrowsers) {
+        auto it = self.overlayBrowsers->find(keyString);
+        if (it != self.overlayBrowsers->end() && it->second) it->second->GetHost()->WasResized();
+    }
     return YES;
 }
 
@@ -812,16 +832,30 @@ static const char *ZeroNativeCefBridgeScript() {
     if (!targetURL || ![self allowsNavigationURL:targetURL]) return NO;
     NSView *overlay = self.overlayViews[[self overlayKeyForWindow:windowId label:label]];
     if (!overlay) return NO;
-    if ([overlay isKindOfClass:[NSTextField class]]) {
-        ((NSTextField *)overlay).stringValue = url;
+    std::string keyString([self overlayKeyForWindow:windowId label:label].UTF8String);
+    if (self.overlayBrowsers) {
+        auto it = self.overlayBrowsers->find(keyString);
+        if (it != self.overlayBrowsers->end() && it->second) {
+            it->second->GetMainFrame()->LoadURL(std::string(url.UTF8String));
+            return YES;
+        }
     }
-    return YES;
+    return NO;
 }
 
 - (BOOL)closeOverlayInWindow:(uint64_t)windowId label:(NSString *)label {
     NSString *key = [self overlayKeyForWindow:windowId label:label];
     NSView *overlay = self.overlayViews[key];
     if (!overlay) return NO;
+    std::string keyString(key.UTF8String);
+    if (self.overlayBrowsers) {
+        auto browser_it = self.overlayBrowsers->find(keyString);
+        if (browser_it != self.overlayBrowsers->end() && browser_it->second) {
+            browser_it->second->GetHost()->CloseBrowser(true);
+        }
+        self.overlayBrowsers->erase(keyString);
+    }
+    if (self.overlayCefClients) self.overlayCefClients->erase(keyString);
     [overlay removeFromSuperview];
     [self.overlayViews removeObjectForKey:key];
     return YES;
@@ -832,6 +866,15 @@ static const char *ZeroNativeCefBridgeScript() {
     NSArray<NSString *> *keys = [self.overlayViews.allKeys copy];
     for (NSString *key in keys) {
         if (![key hasPrefix:prefix]) continue;
+        std::string keyString(key.UTF8String);
+        if (self.overlayBrowsers) {
+            auto browser_it = self.overlayBrowsers->find(keyString);
+            if (browser_it != self.overlayBrowsers->end() && browser_it->second) {
+                browser_it->second->GetHost()->CloseBrowser(true);
+            }
+            self.overlayBrowsers->erase(keyString);
+        }
+        if (self.overlayCefClients) self.overlayCefClients->erase(keyString);
         [self.overlayViews[key] removeFromSuperview];
         [self.overlayViews removeObjectForKey:key];
     }
@@ -869,6 +912,11 @@ static const char *ZeroNativeCefBridgeScript() {
 - (void)setBrowser:(CefRefPtr<CefBrowser>)browser windowId:(uint64_t)windowId {
     if (self.browsers) (*self.browsers)[windowId] = browser;
     if (windowId == 1) self.browser = browser;
+}
+
+- (void)setOverlayBrowser:(CefRefPtr<CefBrowser>)browser key:(NSString *)key {
+    if (!self.overlayBrowsers || key.length == 0) return;
+    (*self.overlayBrowsers)[std::string(key.UTF8String)] = browser;
 }
 
 - (NSString *)fallbackURLForWindowId:(uint64_t)windowId {
@@ -968,6 +1016,11 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
 }
 
 void ZeroNativeCefClient::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
+    if (!overlay_key_.empty()) {
+        NSString *key = [[NSString alloc] initWithBytes:overlay_key_.data() length:overlay_key_.size() encoding:NSUTF8StringEncoding];
+        [host_ setOverlayBrowser:browser key:key ?: @""];
+        return;
+    }
     [host_ setBrowser:browser windowId:window_id_];
 }
 
@@ -1000,6 +1053,7 @@ bool ZeroNativeCefClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser
     (void)browser;
     (void)source_process;
     if (message->GetName() != kBridgeMessageName) return false;
+    if (!bridge_enabled_) return true;
 
     std::string payload = message->GetArgumentList()->GetString(0);
     std::string source_url = frame ? frame->GetURL().ToString() : std::string();

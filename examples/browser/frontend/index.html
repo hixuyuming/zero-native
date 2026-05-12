@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+    <title>zero-native Browser</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="browser-shell">
+      <form class="toolbar" id="browser-form">
+        <div class="traffic-lights" aria-hidden="true">
+          <span class="traffic-light red"></span>
+          <span class="traffic-light yellow"></span>
+          <span class="traffic-light green"></span>
+        </div>
+        <button class="icon-button" id="back" type="button" aria-label="Back" disabled>&larr;</button>
+        <button class="icon-button" id="forward" type="button" aria-label="Forward" disabled>&rarr;</button>
+        <button class="icon-button" id="reload" type="button" aria-label="Reload">↻</button>
+        <input id="address" type="text" spellcheck="false" autocomplete="off" value="https://example.com" aria-label="Address">
+        <button class="go-button" type="submit">Go</button>
+      </form>
+      <section class="page-stage" aria-label="Browser page WebView">
+        <div class="empty-state" id="empty-state">
+          <p>Loading the page in a native overlay WebView...</p>
+        </div>
+      </section>
+      <div class="status" id="status" role="status">Ready</div>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

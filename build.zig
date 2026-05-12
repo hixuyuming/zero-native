@@ -193,10 +193,20 @@ pub fn build(b: *std.Build) void {
     const run_webview_step = b.step("run-webview", "Run the zero-native WebView example");
     run_webview_step.dependOn(&run_webview.step);
 
+    const run_browser = b.addSystemCommand(&.{ "zig", "build", "run", b.fmt("-Dplatform={s}", .{platform_arg}), b.fmt("-Dtrace={s}", .{@tagName(trace_option)}), b.fmt("-Dweb-engine={s}", .{@tagName(web_engine)}), b.fmt("-Dcef-dir={s}", .{cef_dir}) });
+    run_browser.setCwd(b.path("examples/browser"));
+    const run_browser_step = b.step("run-browser", "Run the zero-native browser example");
+    run_browser_step.dependOn(&run_browser.step);
+
     const build_webview_system = b.addSystemCommand(&.{ "zig", "build", b.fmt("-Dplatform={s}", .{platform_arg}), "-Dweb-engine=system" });
     build_webview_system.setCwd(b.path("examples/webview"));
     const webview_system_link_step = b.step("test-webview-system-link", "Build the WebView example with the system engine");
     webview_system_link_step.dependOn(&build_webview_system.step);
+
+    const build_browser_system = b.addSystemCommand(&.{ "zig", "build", b.fmt("-Dplatform={s}", .{platform_arg}), "-Dweb-engine=system" });
+    build_browser_system.setCwd(b.path("examples/browser"));
+    const browser_system_link_step = b.step("test-browser-system-link", "Build the browser example with the system engine");
+    browser_system_link_step.dependOn(&build_browser_system.step);
 
     const frontend_examples_step = b.step("test-examples-frontends", "Run frontend example tests");
     addExampleTestStep(b, frontend_examples_step, "test-example-next", "Run Next example tests", "examples/next");

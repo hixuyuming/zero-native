@@ -96,6 +96,8 @@ pub const Runtime = struct {
     surface: platform.Surface,
     windows: [platform.max_windows]RuntimeWindow = undefined,
     window_count: usize = 0,
+    overlays: [platform.max_overlays]RuntimeOverlay = undefined,
+    overlay_count: usize = 0,
     next_window_id: platform.WindowId = 2,
     invalidated: bool = true,
     timestamp_ns: i128 = 0,
@@ -190,6 +192,7 @@ pub const Runtime = struct {
         try self.options.platform.services.closeWindow(window_id);
         self.windows[index].info.open = false;
         self.windows[index].info.focused = false;
+        self.removeOverlaysForWindow(window_id);
         self.invalidated = true;
     }
 
@@ -502,6 +505,7 @@ pub const Runtime = struct {
         if (state.title.len > 0) info.title = try copyInto(&self.windows[index].title_storage, state.title);
         if (state.label.len > 0 and !std.mem.eql(u8, state.label, info.label)) info.label = try copyInto(&self.windows[index].label_storage, state.label);
         self.windows[index].info = info;
+        if (!state.open) self.removeOverlaysForWindow(state.id);
         if (state.focused) self.setFocusedIndex(index);
     }
 
@@ -572,11 +576,11 @@ pub const Runtime = struct {
         }
     }
 
-    fn allowsBuiltinBridgeCommand(self: *Runtime, command: []const u8, origin: []const u8, is_window: bool) bool {
+    fn allowsBuiltinBridgeCommand(self: *Runtime, command: []const u8, origin: []const u8, uses_window_permission: bool) bool {
         var policy = self.options.builtin_bridge;
         if (self.options.security.permissions.len > 0) policy.permissions = self.options.security.permissions;
         if (policy.enabled) return policy.allows(command, origin);
-        if (!is_window or !self.options.js_window_api) return false;
+        if (!uses_window_permission or !self.options.js_window_api) return false;
         if (!security.allowsOrigin(self.options.security.navigation.allowed_origins, origin)) return false;
         if (self.options.security.permissions.len == 0) return true;
         return security.hasPermission(self.options.security.permissions, security.permission_window);
@@ -598,13 +602,13 @@ pub const Runtime = struct {
 
     fn dispatchOverlayBridgeCommand(self: *Runtime, request: bridge.Request, result_buffer: []u8, response_buffer: []u8) []const u8 {
         const result = if (std.mem.eql(u8, request.command, "zero-native.overlay.create"))
-            self.createOverlayFromJson(request.payload, result_buffer) catch |err| return bridge.writeErrorResponse(response_buffer, request.id, .internal_error, builtinBridgeErrorMessage(err))
+            self.createOverlayFromJson(request.payload, result_buffer) catch |err| return bridge.writeErrorResponse(response_buffer, request.id, builtinBridgeErrorCode(err), builtinBridgeErrorMessage(err))
         else if (std.mem.eql(u8, request.command, "zero-native.overlay.setFrame"))
-            self.setOverlayFrameFromJson(request.payload, result_buffer) catch |err| return bridge.writeErrorResponse(response_buffer, request.id, .internal_error, builtinBridgeErrorMessage(err))
+            self.setOverlayFrameFromJson(request.payload, result_buffer) catch |err| return bridge.writeErrorResponse(response_buffer, request.id, builtinBridgeErrorCode(err), builtinBridgeErrorMessage(err))
         else if (std.mem.eql(u8, request.command, "zero-native.overlay.navigate"))
-            self.navigateOverlayFromJson(request.payload, result_buffer) catch |err| return bridge.writeErrorResponse(response_buffer, request.id, .internal_error, builtinBridgeErrorMessage(err))
+            self.navigateOverlayFromJson(request.payload, result_buffer) catch |err| return bridge.writeErrorResponse(response_buffer, request.id, builtinBridgeErrorCode(err), builtinBridgeErrorMessage(err))
         else if (std.mem.eql(u8, request.command, "zero-native.overlay.close"))
-            self.closeOverlayFromJson(request.payload, result_buffer) catch |err| return bridge.writeErrorResponse(response_buffer, request.id, .internal_error, builtinBridgeErrorMessage(err))
+            self.closeOverlayFromJson(request.payload, result_buffer) catch |err| return bridge.writeErrorResponse(response_buffer, request.id, builtinBridgeErrorCode(err), builtinBridgeErrorMessage(err))
         else
             return bridge.writeErrorResponse(response_buffer, request.id, .unknown_command, "Unknown overlay command");
         return bridge.writeSuccessResponse(response_buffer, request.id, result);
@@ -732,44 +736,118 @@ pub const Runtime = struct {
     }
 
     fn createOverlayFromJson(self: *Runtime, payload: []const u8, output: []u8) ![]const u8 {
-        var storage = json.StringStorage.init(output);
+        var scratch: [platform.max_overlay_label_bytes + platform.max_overlay_url_bytes]u8 = undefined;
+        var storage = json.StringStorage.init(&scratch);
         const label = jsonStringField(payload, "label", &storage) orelse "overlay";
         const url = jsonStringField(payload, "url", &storage) orelse return error.MissingOverlayUrl;
         const window_id = jsonIntegerField(payload, "windowId") orelse 1;
         const overlay_frame = try overlayFrameFromJson(payload);
+        try self.validateOverlayParent(window_id);
+        try validateOverlayLabel(label);
+        try self.validateOverlayUrl(url);
+        if (self.findOverlayIndex(window_id, label) != null) return error.DuplicateOverlayLabel;
+        if (self.overlay_count >= platform.max_overlays) return error.OverlayLimitReached;
         try self.options.platform.services.createOverlay(.{
             .window_id = window_id,
             .label = label,
             .url = url,
             .frame = overlay_frame,
         });
+        try self.reserveOverlay(window_id, label, url, overlay_frame);
         return writeOverlayOkJson(label, window_id, output);
     }
 
     fn setOverlayFrameFromJson(self: *Runtime, payload: []const u8, output: []u8) ![]const u8 {
-        var storage = json.StringStorage.init(output);
+        var scratch: [platform.max_overlay_label_bytes]u8 = undefined;
+        var storage = json.StringStorage.init(&scratch);
         const label = jsonStringField(payload, "label", &storage) orelse "overlay";
         const window_id = jsonIntegerField(payload, "windowId") orelse 1;
         const overlay_frame = try overlayFrameFromJson(payload);
+        try self.validateOverlayParent(window_id);
+        try validateOverlayLabel(label);
+        const overlay_index = self.findOverlayIndex(window_id, label) orelse return error.OverlayNotFound;
         try self.options.platform.services.setOverlayFrame(window_id, label, overlay_frame);
+        self.overlays[overlay_index].frame = overlay_frame;
         return writeOverlayOkJson(label, window_id, output);
     }
 
     fn navigateOverlayFromJson(self: *Runtime, payload: []const u8, output: []u8) ![]const u8 {
-        var storage = json.StringStorage.init(output);
+        var scratch: [platform.max_overlay_label_bytes + platform.max_overlay_url_bytes]u8 = undefined;
+        var storage = json.StringStorage.init(&scratch);
         const label = jsonStringField(payload, "label", &storage) orelse "overlay";
         const url = jsonStringField(payload, "url", &storage) orelse return error.MissingOverlayUrl;
         const window_id = jsonIntegerField(payload, "windowId") orelse 1;
+        try self.validateOverlayParent(window_id);
+        try validateOverlayLabel(label);
+        try self.validateOverlayUrl(url);
+        const overlay_index = self.findOverlayIndex(window_id, label) orelse return error.OverlayNotFound;
         try self.options.platform.services.navigateOverlay(window_id, label, url);
+        self.overlays[overlay_index].url = try copyInto(&self.overlays[overlay_index].url_storage, url);
         return writeOverlayOkJson(label, window_id, output);
     }
 
     fn closeOverlayFromJson(self: *Runtime, payload: []const u8, output: []u8) ![]const u8 {
-        var storage = json.StringStorage.init(output);
+        var scratch: [platform.max_overlay_label_bytes]u8 = undefined;
+        var storage = json.StringStorage.init(&scratch);
         const label = jsonStringField(payload, "label", &storage) orelse "overlay";
         const window_id = jsonIntegerField(payload, "windowId") orelse 1;
+        try self.validateOverlayParent(window_id);
+        try validateOverlayLabel(label);
+        const overlay_index = self.findOverlayIndex(window_id, label) orelse return error.OverlayNotFound;
         try self.options.platform.services.closeOverlay(window_id, label);
+        self.removeOverlayAt(overlay_index);
         return writeOverlayOkJson(label, window_id, output);
+    }
+
+    fn validateOverlayParent(self: *Runtime, window_id: platform.WindowId) !void {
+        const index = self.findWindowIndexById(window_id) orelse return error.WindowNotFound;
+        if (!self.windows[index].info.open) return error.WindowNotFound;
+    }
+
+    fn validateOverlayUrl(self: *Runtime, url: []const u8) !void {
+        if (url.len == 0) return error.MissingOverlayUrl;
+        if (url.len > platform.max_overlay_url_bytes) return error.OverlayUrlTooLarge;
+        var origin_buffer: [512]u8 = undefined;
+        const origin = try overlayUrlOrigin(url, &origin_buffer);
+        if (!security.allowsOrigin(self.options.security.navigation.allowed_origins, origin)) return error.NavigationDenied;
+    }
+
+    fn reserveOverlay(self: *Runtime, window_id: platform.WindowId, label: []const u8, url: []const u8, overlay_frame: geometry.RectF) !void {
+        const index = self.overlay_count;
+        self.overlays[index] = .{ .window_id = window_id, .frame = overlay_frame, .open = true };
+        self.overlays[index].label = try copyInto(&self.overlays[index].label_storage, label);
+        self.overlays[index].url = try copyInto(&self.overlays[index].url_storage, url);
+        self.overlay_count += 1;
+    }
+
+    fn findOverlayIndex(self: *const Runtime, window_id: platform.WindowId, label: []const u8) ?usize {
+        for (self.overlays[0..self.overlay_count], 0..) |overlay, index| {
+            if (overlay.open and overlay.window_id == window_id and std.mem.eql(u8, overlay.label, label)) return index;
+        }
+        return null;
+    }
+
+    fn removeOverlayAt(self: *Runtime, index: usize) void {
+        if (index >= self.overlay_count) return;
+        var cursor = index;
+        while (cursor + 1 < self.overlay_count) : (cursor += 1) {
+            const next = self.overlays[cursor + 1];
+            self.overlays[cursor] = .{ .window_id = next.window_id, .frame = next.frame, .open = next.open };
+            self.overlays[cursor].label = copyInto(&self.overlays[cursor].label_storage, next.label) catch "";
+            self.overlays[cursor].url = copyInto(&self.overlays[cursor].url_storage, next.url) catch "";
+        }
+        self.overlay_count -= 1;
+    }
+
+    fn removeOverlaysForWindow(self: *Runtime, window_id: platform.WindowId) void {
+        var index: usize = 0;
+        while (index < self.overlay_count) {
+            if (self.overlays[index].window_id == window_id) {
+                self.removeOverlayAt(index);
+            } else {
+                index += 1;
+            }
+        }
     }
 
     fn focusWindowFromJson(self: *Runtime, payload: []const u8, output: []u8) ![]const u8 {
@@ -853,6 +931,16 @@ const RuntimeWindow = struct {
     source_storage: [platform.max_window_source_bytes]u8 = undefined,
 };
 
+const RuntimeOverlay = struct {
+    window_id: platform.WindowId = 1,
+    label: []const u8 = "",
+    url: []const u8 = "",
+    frame: geometry.RectF = geometry.RectF.init(0, 0, 0, 0),
+    open: bool = false,
+    label_storage: [platform.max_overlay_label_bytes]u8 = undefined,
+    url_storage: [platform.max_overlay_url_bytes]u8 = undefined,
+};
+
 fn copyInto(buffer: []u8, value: []const u8) ![]const u8 {
     if (value.len > buffer.len) return error.NoSpaceLeft;
     @memcpy(buffer[0..value.len], value);
@@ -910,10 +998,23 @@ fn builtinBridgeErrorMessage(err: anyerror) []const u8 {
         error.DuplicateOverlayLabel => "Overlay label already exists",
         error.OverlayLabelTooLarge => "Overlay label is too large",
         error.OverlayUrlTooLarge => "Overlay URL is too large",
+        error.NavigationDenied => "WebView URL is not allowed by navigation policy",
         error.InvalidWindowOptions => "Window options are invalid",
         error.DuplicateWindowId => "Window id already exists",
         error.NoSpaceLeft => "Native response buffer is too small",
         else => "Native command failed",
+    };
+}
+
+fn builtinBridgeErrorCode(err: anyerror) bridge.ErrorCode {
+    return switch (err) {
+        error.MissingOverlayUrl,
+        error.InvalidOverlayOptions,
+        error.OverlayLabelTooLarge,
+        error.OverlayUrlTooLarge,
+        => .invalid_request,
+        error.NavigationDenied => .permission_denied,
+        else => .internal_error,
     };
 }
 
@@ -933,6 +1034,24 @@ fn overlayFrameFromJson(payload: []const u8) !geometry.RectF {
     );
     if (frame.x < 0 or frame.y < 0 or frame.width <= 0 or frame.height <= 0) return error.InvalidOverlayOptions;
     return frame;
+}
+
+fn validateOverlayLabel(label: []const u8) !void {
+    if (label.len == 0) return error.InvalidOverlayOptions;
+    if (label.len > platform.max_overlay_label_bytes) return error.OverlayLabelTooLarge;
+}
+
+fn overlayUrlOrigin(url: []const u8, buffer: []u8) ![]const u8 {
+    if (std.mem.startsWith(u8, url, "about:")) return "about://local";
+    const scheme_end = std.mem.indexOf(u8, url, "://") orelse return error.InvalidOverlayOptions;
+    const host_start = scheme_end + 3;
+    if (host_start >= url.len) return error.InvalidOverlayOptions;
+    var host_end = host_start;
+    while (host_end < url.len and url[host_end] != '/' and url[host_end] != '?' and url[host_end] != '#') : (host_end += 1) {}
+    if (host_end == host_start) return error.InvalidOverlayOptions;
+    if (host_end > buffer.len) return error.InvalidOverlayOptions;
+    @memcpy(buffer[0..host_end], url[0..host_end]);
+    return buffer[0..host_end];
 }
 
 fn jsonNumberField(payload: []const u8, field: []const u8) ?f32 {
@@ -1187,6 +1306,8 @@ test "runtime handles built-in JavaScript window bridge commands" {
     var harness: TestHarness() = undefined;
     harness.init(.{});
     harness.runtime.options.js_window_api = true;
+    const overlay_origins = [_][]const u8{ "zero://inline", "https://example.com", "https://example.org" };
+    harness.runtime.options.security.navigation.allowed_origins = &overlay_origins;
     var app_state: TestApp = .{};
     try harness.start(app_state.app());
 
@@ -1231,6 +1352,8 @@ test "runtime handles built-in JavaScript overlay bridge commands" {
     var harness: TestHarness() = undefined;
     harness.init(.{});
     harness.runtime.options.js_window_api = true;
+    const overlay_origins = [_][]const u8{ "zero://inline", "https://example.com", "https://example.org" };
+    harness.runtime.options.security.navigation.allowed_origins = &overlay_origins;
     var app_state: TestApp = .{};
     try harness.start(app_state.app());
 
@@ -1276,6 +1399,8 @@ test "runtime validates overlay bridge commands" {
     var harness: TestHarness() = undefined;
     harness.init(.{});
     harness.runtime.options.js_window_api = true;
+    const overlay_origins = [_][]const u8{ "zero://inline", "https://example.com", "https://example.org" };
+    harness.runtime.options.security.navigation.allowed_origins = &overlay_origins;
     var app_state: TestApp = .{};
     try harness.start(app_state.app());
 
@@ -1285,6 +1410,7 @@ test "runtime validates overlay bridge commands" {
         .window_id = 1,
     } });
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "WebView URL is missing") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"invalid_request\"") != null);
 
     try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
         .bytes = "{\"id\":\"invalid-frame\",\"command\":\"zero-native.overlay.create\",\"payload\":{\"label\":\"preview\",\"url\":\"https://example.com\",\"frame\":{\"width\":0,\"height\":200}}}",
@@ -1292,6 +1418,7 @@ test "runtime validates overlay bridge commands" {
         .window_id = 1,
     } });
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "WebView options are invalid") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"invalid_request\"") != null);
 
     try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
         .bytes = "{\"id\":\"ok\",\"command\":\"zero-native.overlay.create\",\"payload\":{\"label\":\"preview\",\"url\":\"https://example.com\",\"frame\":{\"width\":300,\"height\":200}}}",
@@ -1313,6 +1440,43 @@ test "runtime validates overlay bridge commands" {
         .window_id = 1,
     } });
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "Window was not found") != null);
+
+    var long_label = [_]u8{'a'} ** (platform.max_overlay_label_bytes + 1);
+    var long_label_request_buffer: [512]u8 = undefined;
+    const long_label_request = try std.fmt.bufPrint(&long_label_request_buffer, "{{\"id\":\"long-label\",\"command\":\"zero-native.overlay.create\",\"payload\":{{\"label\":\"{s}\",\"url\":\"https://example.com\",\"frame\":{{\"width\":300,\"height\":200}}}}}}", .{&long_label});
+    try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
+        .bytes = long_label_request,
+        .origin = "zero://inline",
+        .window_id = 1,
+    } });
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "Overlay label is too large") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"invalid_request\"") != null);
+
+    var long_url = [_]u8{'a'} ** (platform.max_overlay_url_bytes + 1);
+    var long_url_request_buffer: [platform.max_overlay_url_bytes + 256]u8 = undefined;
+    const long_url_request = try std.fmt.bufPrint(&long_url_request_buffer, "{{\"id\":\"long-url\",\"command\":\"zero-native.overlay.create\",\"payload\":{{\"label\":\"too-long-url\",\"url\":\"{s}\",\"frame\":{{\"width\":300,\"height\":200}}}}}}", .{&long_url});
+    try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
+        .bytes = long_url_request,
+        .origin = "zero://inline",
+        .window_id = 1,
+    } });
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "Overlay URL is too large") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"invalid_request\"") != null);
+
+    try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
+        .bytes = "{\"id\":\"denied-url\",\"command\":\"zero-native.overlay.navigate\",\"payload\":{\"label\":\"preview\",\"url\":\"https://blocked.example\",\"frame\":{\"width\":300,\"height\":200}}}",
+        .origin = "zero://inline",
+        .window_id = 1,
+    } });
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"permission_denied\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "navigation policy") != null);
+
+    try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
+        .bytes = "{\"id\":\"escaped\",\"command\":\"zero-native.overlay.create\",\"payload\":{\"label\":\"preview \\\"quoted\\\"\",\"url\":\"https://example.com\",\"frame\":{\"width\":300,\"height\":200}}}",
+        .origin = "zero://inline",
+        .window_id = 1,
+    } });
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"label\":\"preview \\\"quoted\\\"\"") != null);
 }
 
 test "runtime gates JavaScript window API by origin and configured permission" {
@@ -1381,10 +1545,13 @@ test "runtime gates JavaScript webview API by origin and configured permission" 
     try std.testing.expect(std.mem.indexOf(u8, denied_permission.null_platform.lastBridgeResponse(), "\"permission_denied\"") != null);
 
     const window_permission = [_][]const u8{security.permission_window};
+    const overlay_origins = [_][]const u8{ "zero://inline", "https://example.com" };
     var allowed: TestHarness() = undefined;
     allowed.init(.{});
     allowed.runtime.options.js_window_api = true;
     allowed.runtime.options.security.permissions = &window_permission;
+    allowed.runtime.options.security.navigation.allowed_origins = &overlay_origins;
+    try allowed.runtime.dispatchPlatformEvent(app, .app_start);
     try allowed.runtime.dispatchPlatformEvent(app, .{ .bridge_message = .{
         .bytes = "{\"id\":\"allowed\",\"command\":\"zero-native.overlay.create\",\"payload\":{\"url\":\"https://example.com\",\"frame\":{\"width\":300,\"height\":200}}}",
         .origin = "zero://inline",
@@ -1409,6 +1576,8 @@ test "runtime gates built-in bridge commands through explicit policy" {
     var harness: TestHarness() = undefined;
     harness.init(.{});
     harness.runtime.options.security.permissions = &window_permissions;
+    const overlay_origins = [_][]const u8{ "zero://inline", "https://example.com" };
+    harness.runtime.options.security.navigation.allowed_origins = &overlay_origins;
     harness.runtime.options.builtin_bridge = .{ .enabled = true, .commands = &policies };
     var app_state: TestApp = .{};
     try harness.start(app_state.app());

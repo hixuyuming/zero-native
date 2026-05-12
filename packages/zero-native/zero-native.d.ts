@@ -47,9 +47,13 @@ export interface ZeroNativeWebViewInfo {
 }
 
 export interface ZeroNativeCreateWebViewOptions {
+  /** Stable label for this overlay WebView. Defaults to "overlay". Unique per parent window. */
   label?: string;
+  /** Parent native window id. Defaults to the main window, 1. */
   windowId?: number;
+  /** Target URL. Its origin must be listed in the runtime navigation policy. */
   url: string;
+  /** Logical content coordinates relative to the parent window. */
   frame: ZeroNativeRect;
 }
 

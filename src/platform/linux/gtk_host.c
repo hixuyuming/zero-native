@@ -482,11 +482,6 @@ static gboolean on_close_request(GtkWindow *window, gpointer data) {
 
     if (closed_index >= 0) {
         zero_native_clear_window(&host->windows[closed_index]);
-        for (int i = closed_index; i + 1 < host->window_count; i++) {
-            host->windows[i] = host->windows[i + 1];
-        }
-        memset(&host->windows[host->window_count - 1], 0, sizeof(host->windows[host->window_count - 1]));
-        host->window_count--;
     }
 
     int open_count = 0;
@@ -618,10 +613,21 @@ static void zero_native_setup_bridge(zero_native_gtk_window_t *win) {
 }
 
 static zero_native_gtk_window_t *zero_native_create_window_internal(zero_native_gtk_host_t *host, uint64_t window_id, const char *title, const char *label, double x, double y, double width, double height, int restore_frame) {
-    if (host->window_count >= ZERO_NATIVE_MAX_WINDOWS) return NULL;
     if (zero_native_find_window(host, window_id)) return NULL;
 
-    zero_native_gtk_window_t *win = &host->windows[host->window_count];
+    int slot = -1;
+    for (int i = 0; i < host->window_count; i++) {
+        if (!host->windows[i].gtk_window) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        if (host->window_count >= ZERO_NATIVE_MAX_WINDOWS) return NULL;
+        slot = host->window_count++;
+    }
+
+    zero_native_gtk_window_t *win = &host->windows[slot];
     memset(win, 0, sizeof(*win));
     win->id = window_id;
     win->host = host;
@@ -662,7 +668,6 @@ static zero_native_gtk_window_t *zero_native_create_window_internal(zero_native_
     g_signal_connect(win->gtk_window, "close-request", G_CALLBACK(on_close_request), win);
     g_signal_connect(win->web_view, "decide-policy", G_CALLBACK(on_decide_policy), win);
 
-    host->window_count++;
     return win;
 }
 

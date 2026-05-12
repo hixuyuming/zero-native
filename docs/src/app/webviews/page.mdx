@@ -4,7 +4,7 @@ Overlay WebViews let an app place an isolated native WebView above an existing w
 
 ## JavaScript API
 
-Enable the built-in WebView commands from an allowed origin:
+Enable the built-in WebView helpers from an allowed origin:
 
 ```zig
 const app_permissions = [_][]const u8{zero_native.security.permission_window};
@@ -32,6 +32,10 @@ await preview.close();
 ```
 
 Coordinates are logical content coordinates relative to the parent window: `x: 0, y: 0` is the top-left corner of the window content area.
+
+`windowId` defaults to `1`, the main window. Pass the `id` returned by `window.zero.windows.create()` when the overlay should attach to a secondary window.
+
+You can also enable the same helpers with an explicit `builtin_bridge` policy instead of `js_window_api`. In that mode, list every overlay command your app calls: `zero-native.overlay.create`, `zero-native.overlay.setFrame`, `zero-native.overlay.navigate`, and `zero-native.overlay.close`.
 
 ## Lifecycle
 
@@ -75,4 +79,4 @@ The helper calls these built-in bridge commands internally:
   </tbody>
 </table>
 
-Overlay URLs are checked against the runtime navigation policy. Add the target origin to `security.navigation.allowed_origins` before loading it.
+Overlay URLs are checked against the runtime navigation policy before native views are created or navigated. Add the target origin to `security.navigation.allowed_origins` before loading it.

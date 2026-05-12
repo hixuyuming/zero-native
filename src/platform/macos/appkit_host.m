@@ -59,6 +59,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
 @property(nonatomic, assign) void *context;
 @property(nonatomic, assign) void *bridgeContext;
 @property(nonatomic, assign) BOOL didShutdown;
+@property(nonatomic, assign) NSInteger bridgeFrameKeepalive;
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, assign) zero_native_appkit_tray_callback_t trayCallback;
 @property(nonatomic, assign) void *trayContext;
@@ -87,6 +88,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
 - (void)emitWindowFrame:(BOOL)open;
 - (void)emitWindowFrameForWindowId:(uint64_t)windowId open:(BOOL)open;
 - (void)scheduleFrame;
+- (void)scheduleBridgeFrames;
 - (void)emitFrame;
 - (void)emitShutdown;
 - (void)loadSource:(NSString *)source kind:(NSInteger)kind assetRoot:(NSString *)assetRoot entry:(NSString *)entry origin:(NSString *)origin spaFallback:(BOOL)spaFallback;
@@ -375,6 +377,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
     [window.contentView addSubview:overlay positioned:NSWindowAbove relativeTo:nil];
     [overlay loadRequest:[NSURLRequest requestWithURL:targetURL]];
     self.overlayWebViews[key] = overlay;
+    [self scheduleBridgeFrames];
     return YES;
 }
 
@@ -384,6 +387,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
     WKWebView *overlay = self.overlayWebViews[[self overlayKeyForWindow:windowId label:label]];
     if (!window || !overlay) return NO;
     overlay.frame = [self overlayFrameForWindow:window x:x y:y width:width height:height];
+    [self scheduleBridgeFrames];
     return YES;
 }
 
@@ -394,6 +398,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
     if (!overlay || !targetURL) return NO;
     if (![self allowsNavigationURL:targetURL]) return NO;
     [overlay loadRequest:[NSURLRequest requestWithURL:targetURL]];
+    [self scheduleBridgeFrames];
     return YES;
 }
 
@@ -403,6 +408,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
     if (!overlay) return NO;
     [overlay removeFromSuperview];
     [self.overlayWebViews removeObjectForKey:key];
+    [self scheduleBridgeFrames];
     return YES;
 }
 
@@ -711,9 +717,18 @@ static NSURL *ZeroNativeAssetEntryURL(NSString *origin, NSString *entryPath) {
                                                 repeats:NO];
 }
 
+- (void)scheduleBridgeFrames {
+    self.bridgeFrameKeepalive = 30;
+    [self scheduleFrame];
+}
+
 - (void)emitFrame {
     self.timer = nil;
     [self emitEvent:(zero_native_appkit_event_t){ .kind = ZERO_NATIVE_APPKIT_EVENT_FRAME }];
+    if (self.bridgeFrameKeepalive > 0) {
+        self.bridgeFrameKeepalive -= 1;
+        [self scheduleFrame];
+    }
 }
 
 - (void)emitShutdown {
@@ -832,6 +847,7 @@ static NSURL *ZeroNativeAssetEntryURL(NSString *origin, NSString *entryPath) {
     WKWebView *webView = [self webViewForWindowId:windowId];
     NSString *script = [NSString stringWithFormat:@"window.zero&&window.zero._complete(%@);", response.length > 0 ? response : @"{}"];
     [webView evaluateJavaScript:script completionHandler:nil];
+    [self scheduleBridgeFrames];
 }
 
 - (void)emitEventNamed:(NSString *)name detailJSON:(NSString *)detailJSON windowId:(uint64_t)windowId {
@@ -841,6 +857,7 @@ static NSURL *ZeroNativeAssetEntryURL(NSString *origin, NSString *entryPath) {
     NSString *detail = detailJSON.length > 0 ? detailJSON : @"null";
     NSString *script = [NSString stringWithFormat:@"window.zero&&window.zero._emit(%@,%@);", nameJSON, detail];
     [webView evaluateJavaScript:script completionHandler:nil];
+    [self scheduleBridgeFrames];
 }
 
 - (void)showPreferences:(id)sender {
