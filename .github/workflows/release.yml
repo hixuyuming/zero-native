@@ -99,7 +99,7 @@ jobs:
       - name: Extract changelog entry
         run: |
           VERSION="${{ needs.check-release.outputs.version }}"
-          awk '/<!-- release:start -->/{found=1; next} /<!-- release:end -->/{found=0} found{print}' CHANGELOG.md > /tmp/release-notes.md
+          awk '/<!-- release:start -->/{found=1; next} /<!-- release:end -->/{exit} found{print}' CHANGELOG.md > /tmp/release-notes.md
 
           LINES=$(wc -l < /tmp/release-notes.md | tr -d ' ')
           if [ "$LINES" -lt 2 ]; then

@@ -17,8 +17,6 @@ All notable changes to zero-native will be documented in this file.
 
 ## 0.1.8
 
-<!-- release:start -->
-
 ### Bug Fixes
 
 - **Install completion delay** - Drain redirected GitHub responses during postinstall so npm exits immediately after the native binary is installed.
@@ -26,11 +24,8 @@ All notable changes to zero-native will be documented in this file.
 ### Contributors
 
 - @ctate
-<!-- release:end -->
 
 ## 0.1.7
-
-<!-- release:start -->
 
 ### Improvements
 
@@ -39,11 +34,8 @@ All notable changes to zero-native will be documented in this file.
 ### Contributors
 
 - @ctate
-<!-- release:end -->
 
 ## 0.1.6
-
-<!-- release:start -->
 
 ### Improvements
 
@@ -52,11 +44,8 @@ All notable changes to zero-native will be documented in this file.
 ### Contributors
 
 - @ctate
-<!-- release:end -->
 
 ## 0.1.5
-
-<!-- release:start -->
 
 ### Bug Fixes
 
@@ -65,11 +54,8 @@ All notable changes to zero-native will be documented in this file.
 ### Contributors
 
 - @ctate
-<!-- release:end -->
 
 ## 0.1.4
-
-<!-- release:start -->
 
 ### Bug Fixes
 
@@ -82,11 +68,8 @@ All notable changes to zero-native will be documented in this file.
 ### Contributors
 
 - @ctate
-<!-- release:end -->
 
 ## 0.1.3
-
-<!-- release:start -->
 
 ### Bug Fixes
 
@@ -97,7 +80,6 @@ All notable changes to zero-native will be documented in this file.
 ### Contributors
 
 - @ctate
-<!-- release:end -->
 
 ## 0.1.2
 
