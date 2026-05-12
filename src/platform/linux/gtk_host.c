@@ -7,11 +7,22 @@
 #include <stdio.h>
 
 #define ZERO_NATIVE_MAX_WINDOWS 16
+#define ZERO_NATIVE_MAX_OVERLAYS 16
+
+typedef struct zero_native_gtk_overlay {
+    char *label;
+    WebKitWebView *web_view;
+    double x;
+    double y;
+    double width;
+    double height;
+} zero_native_gtk_overlay_t;
 
 typedef struct zero_native_gtk_window {
     uint64_t id;
     GtkWindow *gtk_window;
     WebKitWebView *web_view;
+    GtkWidget *overlay_root;
     WebKitUserContentManager *content_manager;
     struct zero_native_gtk_host *host;
     char *label;
@@ -23,6 +34,8 @@ typedef struct zero_native_gtk_window {
     int spa_fallback;
     double x;
     double y;
+    zero_native_gtk_overlay_t overlays[ZERO_NATIVE_MAX_OVERLAYS];
+    int overlay_count;
 } zero_native_gtk_window_t;
 
 struct zero_native_gtk_host {
@@ -114,8 +127,57 @@ static void zero_native_clear_window_source(zero_native_gtk_window_t *win) {
     win->spa_fallback = 0;
 }
 
+static int zero_native_valid_overlay_frame(double x, double y, double width, double height) {
+    return x >= 0 && y >= 0 && width > 0 && height > 0;
+}
+
+static int zero_native_overlay_extent(double value) {
+    return value > 1 ? (int)(value + 0.5) : 1;
+}
+
+static int zero_native_overlay_coord(double value) {
+    return value > 0 ? (int)(value + 0.5) : 0;
+}
+
+static void zero_native_apply_overlay_frame(zero_native_gtk_overlay_t *overlay) {
+    if (!overlay || !overlay->web_view) return;
+    GtkWidget *widget = GTK_WIDGET(overlay->web_view);
+    gtk_widget_set_halign(widget, GTK_ALIGN_START);
+    gtk_widget_set_valign(widget, GTK_ALIGN_START);
+    gtk_widget_set_margin_start(widget, zero_native_overlay_coord(overlay->x));
+    gtk_widget_set_margin_top(widget, zero_native_overlay_coord(overlay->y));
+    gtk_widget_set_size_request(widget, zero_native_overlay_extent(overlay->width), zero_native_overlay_extent(overlay->height));
+}
+
+static void zero_native_clear_overlay(zero_native_gtk_window_t *win, zero_native_gtk_overlay_t *overlay) {
+    if (!overlay) return;
+    if (overlay->web_view && win && win->overlay_root) {
+        gtk_overlay_remove_overlay(GTK_OVERLAY(win->overlay_root), GTK_WIDGET(overlay->web_view));
+    }
+    free(overlay->label);
+    memset(overlay, 0, sizeof(*overlay));
+}
+
+static void zero_native_remove_overlay_at(zero_native_gtk_window_t *win, int index) {
+    if (!win || index < 0 || index >= win->overlay_count) return;
+    zero_native_clear_overlay(win, &win->overlays[index]);
+    for (int i = index; i + 1 < win->overlay_count; i++) {
+        win->overlays[i] = win->overlays[i + 1];
+    }
+    memset(&win->overlays[win->overlay_count - 1], 0, sizeof(win->overlays[win->overlay_count - 1]));
+    win->overlay_count--;
+}
+
+static void zero_native_clear_overlays(zero_native_gtk_window_t *win) {
+    if (!win) return;
+    while (win->overlay_count > 0) {
+        zero_native_remove_overlay_at(win, win->overlay_count - 1);
+    }
+}
+
 static void zero_native_clear_window(zero_native_gtk_window_t *win) {
     if (!win) return;
+    zero_native_clear_overlays(win);
     zero_native_clear_window_source(win);
     free(win->label);
     free(win->title);
@@ -205,6 +267,8 @@ static const char *zero_native_bridge_script(void) {
         "});"
         "}"
         "function selector(value){return typeof value==='number'?{id:value}:{label:String(value)};}"
+        "function framePayload(options){options=options||{};var frame=options.frame||options;return {label:options.label,windowId:options.windowId,url:options.url,frame:{x:frame.x||0,y:frame.y||0,width:frame.width,height:frame.height}};}"
+        "function webviewHandle(info){return Object.freeze({label:info.label,windowId:info.windowId,setFrame:function(frame){return webviews.setFrame({label:info.label,windowId:info.windowId,frame:frame});},navigate:function(url){return webviews.navigate({label:info.label,windowId:info.windowId,url:url});},close:function(){return webviews.close({label:info.label,windowId:info.windowId});}});}"
         "function on(name,callback){if(typeof callback!=='function'){throw new TypeError('callback must be a function');}var set=listeners.get(name);if(!set){set=new Set();listeners.set(name,set);}set.add(callback);return function(){off(name,callback);};}"
         "function off(name,callback){var set=listeners.get(name);if(set){set.delete(callback);if(set.size===0){listeners.delete(name);}}}"
         "function emit(name,detail){var set=listeners.get(name);if(set){Array.from(set).forEach(function(callback){callback(detail);});}window.dispatchEvent(new CustomEvent('zero-native:'+name,{detail:detail}));}"
@@ -219,7 +283,13 @@ static const char *zero_native_bridge_script(void) {
         "saveFile:function(options){return invoke('zero-native.dialog.saveFile',options||{});},"
         "showMessage:function(options){return invoke('zero-native.dialog.showMessage',options||{});}"
         "});"
-        "Object.defineProperty(window,'zero',{value:Object.freeze({invoke:invoke,on:on,off:off,windows:windows,dialogs:dialogs,_complete:complete,_emit:emit}),configurable:false});"
+        "var webviews=Object.freeze({"
+        "create:function(options){return invoke('zero-native.overlay.create',framePayload(options||{})).then(webviewHandle);},"
+        "setFrame:function(options){return invoke('zero-native.overlay.setFrame',framePayload(options||{}));},"
+        "navigate:function(options){if(typeof options==='string'){options={url:options};}options=options||{};return invoke('zero-native.overlay.navigate',{label:options.label,windowId:options.windowId,url:options.url});},"
+        "close:function(options){if(typeof options==='string'){options={label:options};}options=options||{};return invoke('zero-native.overlay.close',{label:options.label,windowId:options.windowId});}"
+        "});"
+        "Object.defineProperty(window,'zero',{value:Object.freeze({invoke:invoke,on:on,off:off,windows:windows,dialogs:dialogs,webviews:webviews,_complete:complete,_emit:emit}),configurable:false});"
         "})();";
 }
 
@@ -324,6 +394,14 @@ static void zero_native_asset_scheme_request(WebKitURISchemeRequest *request, gp
 static zero_native_gtk_window_t *zero_native_find_window(zero_native_gtk_host_t *host, uint64_t id) {
     for (int i = 0; i < host->window_count; i++) {
         if (host->windows[i].id == id && host->windows[i].gtk_window) return &host->windows[i];
+    }
+    return NULL;
+}
+
+static zero_native_gtk_overlay_t *zero_native_find_overlay(zero_native_gtk_window_t *win, const char *label) {
+    if (!win || !label) return NULL;
+    for (int i = 0; i < win->overlay_count; i++) {
+        if (win->overlays[i].label && strcmp(win->overlays[i].label, label) == 0) return &win->overlays[i];
     }
     return NULL;
 }
@@ -489,6 +567,26 @@ static gboolean on_decide_policy(WebKitWebView *web_view, WebKitPolicyDecision *
     return TRUE;
 }
 
+static gboolean on_overlay_decide_policy(WebKitWebView *web_view, WebKitPolicyDecision *decision, WebKitPolicyDecisionType type, gpointer data) {
+    (void)web_view;
+    zero_native_gtk_window_t *win = data;
+    zero_native_gtk_host_t *host = win->host;
+    const char *uri = zero_native_decision_uri(decision, type);
+    if (!uri || !uri[0] || strncmp(uri, "about:", 6) == 0) {
+        webkit_policy_decision_use(decision);
+        return TRUE;
+    }
+    if (zero_native_policy_list_matches(host->allowed_origins, host->allowed_origins_count, uri)) {
+        webkit_policy_decision_use(decision);
+        return TRUE;
+    }
+    if (host->external_link_action == 1 && zero_native_policy_list_matches(host->allowed_external_urls, host->allowed_external_urls_count, uri)) {
+        zero_native_open_external_uri(win->gtk_window, uri);
+    }
+    webkit_policy_decision_ignore(decision);
+    return TRUE;
+}
+
 static void on_bridge_message(WebKitUserContentManager *manager, JSCValue *js_result, gpointer data) {
     (void)manager;
     zero_native_gtk_window_t *win = data;
@@ -554,7 +652,9 @@ static zero_native_gtk_window_t *zero_native_create_window_internal(zero_native_
     }
     zero_native_setup_bridge(win);
 
-    gtk_window_set_child(win->gtk_window, GTK_WIDGET(wv));
+    win->overlay_root = gtk_overlay_new();
+    gtk_overlay_set_child(GTK_OVERLAY(win->overlay_root), GTK_WIDGET(wv));
+    gtk_window_set_child(win->gtk_window, win->overlay_root);
 
     g_signal_connect(win->gtk_window, "notify::default-width", G_CALLBACK(on_resize), win);
     g_signal_connect(win->gtk_window, "notify::default-height", G_CALLBACK(on_resize), win);
@@ -624,9 +724,7 @@ void zero_native_gtk_destroy(zero_native_gtk_host_t *host) {
     if (!host) return;
     if (host->frame_timer) g_source_remove(host->frame_timer);
     for (int i = 0; i < host->window_count; i++) {
-        zero_native_clear_window_source(&host->windows[i]);
-        free(host->windows[i].label);
-        free(host->windows[i].title);
+        zero_native_clear_window(&host->windows[i]);
     }
     g_object_unref(host->app);
     free(host->app_name);
@@ -796,6 +894,100 @@ int zero_native_gtk_close_window(zero_native_gtk_host_t *host, uint64_t window_i
     if (!win || !win->gtk_window) return 0;
     gtk_window_close(win->gtk_window);
     return 1;
+}
+
+int zero_native_gtk_create_overlay(zero_native_gtk_host_t *host, uint64_t window_id, const char *label, size_t label_len, const char *url, size_t url_len, double x, double y, double width, double height) {
+    zero_native_gtk_window_t *win = zero_native_find_window(host, window_id);
+    if (!win || !win->overlay_root || label_len == 0 || url_len == 0 || !zero_native_valid_overlay_frame(x, y, width, height)) return 0;
+    if (win->overlay_count >= ZERO_NATIVE_MAX_OVERLAYS) return 0;
+
+    char *label_copy = zero_native_strndup(label, label_len);
+    char *url_copy = zero_native_strndup(url, url_len);
+    if (!label_copy || !url_copy) {
+        free(label_copy);
+        free(url_copy);
+        return 0;
+    }
+    if (zero_native_find_overlay(win, label_copy) || !zero_native_policy_list_matches(host->allowed_origins, host->allowed_origins_count, url_copy)) {
+        free(label_copy);
+        free(url_copy);
+        return 0;
+    }
+
+    WebKitUserContentManager *manager = webkit_user_content_manager_new();
+    WebKitWebView *web_view = WEBKIT_WEB_VIEW(
+        g_object_new(WEBKIT_TYPE_WEB_VIEW,
+            "user-content-manager", manager,
+            NULL));
+    g_object_unref(manager);
+    if (!web_view) {
+        free(label_copy);
+        free(url_copy);
+        return 0;
+    }
+
+    zero_native_gtk_overlay_t *overlay = &win->overlays[win->overlay_count++];
+    memset(overlay, 0, sizeof(*overlay));
+    overlay->label = label_copy;
+    overlay->web_view = web_view;
+    overlay->x = x;
+    overlay->y = y;
+    overlay->width = width;
+    overlay->height = height;
+    zero_native_apply_overlay_frame(overlay);
+    gtk_overlay_add_overlay(GTK_OVERLAY(win->overlay_root), GTK_WIDGET(web_view));
+    g_signal_connect(web_view, "decide-policy", G_CALLBACK(on_overlay_decide_policy), win);
+    webkit_web_view_load_uri(web_view, url_copy);
+    free(url_copy);
+    return 1;
+}
+
+int zero_native_gtk_set_overlay_frame(zero_native_gtk_host_t *host, uint64_t window_id, const char *label, size_t label_len, double x, double y, double width, double height) {
+    zero_native_gtk_window_t *win = zero_native_find_window(host, window_id);
+    char *label_copy = label_len > 0 ? zero_native_strndup(label, label_len) : NULL;
+    zero_native_gtk_overlay_t *overlay = zero_native_find_overlay(win, label_copy);
+    free(label_copy);
+    if (!overlay || !zero_native_valid_overlay_frame(x, y, width, height)) return 0;
+    overlay->x = x;
+    overlay->y = y;
+    overlay->width = width;
+    overlay->height = height;
+    zero_native_apply_overlay_frame(overlay);
+    return 1;
+}
+
+int zero_native_gtk_navigate_overlay(zero_native_gtk_host_t *host, uint64_t window_id, const char *label, size_t label_len, const char *url, size_t url_len) {
+    zero_native_gtk_window_t *win = zero_native_find_window(host, window_id);
+    char *label_copy = label_len > 0 ? zero_native_strndup(label, label_len) : NULL;
+    char *url_copy = url_len > 0 ? zero_native_strndup(url, url_len) : NULL;
+    zero_native_gtk_overlay_t *overlay = zero_native_find_overlay(win, label_copy);
+    if (!overlay || !url_copy || !zero_native_policy_list_matches(host->allowed_origins, host->allowed_origins_count, url_copy)) {
+        free(label_copy);
+        free(url_copy);
+        return 0;
+    }
+    webkit_web_view_load_uri(overlay->web_view, url_copy);
+    free(label_copy);
+    free(url_copy);
+    return 1;
+}
+
+int zero_native_gtk_close_overlay(zero_native_gtk_host_t *host, uint64_t window_id, const char *label, size_t label_len) {
+    zero_native_gtk_window_t *win = zero_native_find_window(host, window_id);
+    char *label_copy = label_len > 0 ? zero_native_strndup(label, label_len) : NULL;
+    if (!win || !label_copy) {
+        free(label_copy);
+        return 0;
+    }
+    for (int i = 0; i < win->overlay_count; i++) {
+        if (win->overlays[i].label && strcmp(win->overlays[i].label, label_copy) == 0) {
+            free(label_copy);
+            zero_native_remove_overlay_at(win, i);
+            return 1;
+        }
+    }
+    free(label_copy);
+    return 0;
 }
 
 typedef struct zero_native_clipboard_read_state {

@@ -8,6 +8,7 @@
 
 @class ZeroNativeAppKitHost;
 
+static const NSUInteger ZeroNativeMaxOverlayWebViews = 16;
 static NSRect constrainFrame(NSRect frame);
 static NSString *ZeroNativeAppKitBridgeScript(void);
 static NSString *ZeroNativeMimeTypeForPath(NSString *path);
@@ -74,6 +75,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
 - (BOOL)setOverlayFrameInWindow:(uint64_t)windowId label:(NSString *)label x:(double)x y:(double)y width:(double)width height:(double)height;
 - (BOOL)navigateOverlayInWindow:(uint64_t)windowId label:(NSString *)label url:(NSString *)url;
 - (BOOL)closeOverlayInWindow:(uint64_t)windowId label:(NSString *)label;
+- (void)closeOverlaysInWindow:(uint64_t)windowId;
 - (void)configureApplication;
 - (void)buildMenuBar;
 - (NSMenuItem *)menuItem:(NSString *)title action:(SEL)action key:(NSString *)key modifiers:(NSEventModifierFlags)modifiers;
@@ -122,6 +124,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
 - (void)windowWillClose:(NSNotification *)notification {
     (void)notification;
     [self.host emitWindowFrameForWindowId:self.windowId open:NO];
+    [self.host closeOverlaysInWindow:self.windowId];
     NSNumber *key = @(self.windowId);
     [self.host.windows removeObjectForKey:key];
     [self.host.webViews removeObjectForKey:key];
@@ -346,18 +349,17 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
 }
 
 - (BOOL)createOverlayInWindow:(uint64_t)windowId label:(NSString *)label url:(NSString *)url x:(double)x y:(double)y width:(double)width height:(double)height {
-    if (label.length == 0 || url.length == 0) return NO;
+    if (label.length == 0 || url.length == 0 || width <= 0 || height <= 0 || x < 0 || y < 0) return NO;
     NSWindow *window = self.windows[@(windowId)] ?: (windowId == 1 ? self.window : nil);
     if (!window || !window.contentView) return NO;
     NSURL *targetURL = [NSURL URLWithString:url];
     if (!targetURL) return NO;
+    if (![self allowsNavigationURL:targetURL]) return NO;
+    if (self.overlayWebViews.count >= ZeroNativeMaxOverlayWebViews) return NO;
 
     NSString *key = [self overlayKeyForWindow:windowId label:label];
     WKWebView *existing = self.overlayWebViews[key];
-    if (existing) {
-        [existing removeFromSuperview];
-        [self.overlayWebViews removeObjectForKey:key];
-    }
+    if (existing) return NO;
 
     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
     if ([configuration.preferences respondsToSelector:NSSelectorFromString(@"setDeveloperExtrasEnabled:")]) {
@@ -368,6 +370,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
     if ([overlay respondsToSelector:NSSelectorFromString(@"setInspectable:")]) {
         [overlay setValue:@YES forKey:@"inspectable"];
     }
+    overlay.navigationDelegate = self;
     overlay.autoresizingMask = NSViewNotSizable;
     [window.contentView addSubview:overlay positioned:NSWindowAbove relativeTo:nil];
     [overlay loadRequest:[NSURLRequest requestWithURL:targetURL]];
@@ -376,6 +379,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
 }
 
 - (BOOL)setOverlayFrameInWindow:(uint64_t)windowId label:(NSString *)label x:(double)x y:(double)y width:(double)width height:(double)height {
+    if (label.length == 0 || width <= 0 || height <= 0 || x < 0 || y < 0) return NO;
     NSWindow *window = self.windows[@(windowId)] ?: (windowId == 1 ? self.window : nil);
     WKWebView *overlay = self.overlayWebViews[[self overlayKeyForWindow:windowId label:label]];
     if (!window || !overlay) return NO;
@@ -384,9 +388,11 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
 }
 
 - (BOOL)navigateOverlayInWindow:(uint64_t)windowId label:(NSString *)label url:(NSString *)url {
+    if (label.length == 0 || url.length == 0) return NO;
     WKWebView *overlay = self.overlayWebViews[[self overlayKeyForWindow:windowId label:label]];
     NSURL *targetURL = [NSURL URLWithString:url ?: @""];
     if (!overlay || !targetURL) return NO;
+    if (![self allowsNavigationURL:targetURL]) return NO;
     [overlay loadRequest:[NSURLRequest requestWithURL:targetURL]];
     return YES;
 }
@@ -398,6 +404,17 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
     [overlay removeFromSuperview];
     [self.overlayWebViews removeObjectForKey:key];
     return YES;
+}
+
+- (void)closeOverlaysInWindow:(uint64_t)windowId {
+    NSString *prefix = [NSString stringWithFormat:@"%llu:", windowId];
+    NSArray<NSString *> *keys = [self.overlayWebViews.allKeys copy];
+    for (NSString *key in keys) {
+        if (![key hasPrefix:prefix]) continue;
+        WKWebView *overlay = self.overlayWebViews[key];
+        [overlay removeFromSuperview];
+        [self.overlayWebViews removeObjectForKey:key];
+    }
 }
 
 static NSRect constrainFrame(NSRect frame) {
@@ -445,6 +462,8 @@ static NSString *ZeroNativeAppKitBridgeScript(void) {
         "});"
         "}"
         "function selector(value){return typeof value==='number'?{id:value}:{label:String(value)};}"
+        "function framePayload(options){options=options||{};var frame=options.frame||options;return {label:options.label,windowId:options.windowId,url:options.url,frame:{x:frame.x||0,y:frame.y||0,width:frame.width,height:frame.height}};}"
+        "function webviewHandle(info){return Object.freeze({label:info.label,windowId:info.windowId,setFrame:function(frame){return webviews.setFrame({label:info.label,windowId:info.windowId,frame:frame});},navigate:function(url){return webviews.navigate({label:info.label,windowId:info.windowId,url:url});},close:function(){return webviews.close({label:info.label,windowId:info.windowId});}});}"
         "function on(name,callback){if(typeof callback!=='function'){throw new TypeError('callback must be a function');}var set=listeners.get(name);if(!set){set=new Set();listeners.set(name,set);}set.add(callback);return function(){off(name,callback);};}"
         "function off(name,callback){var set=listeners.get(name);if(set){set.delete(callback);if(set.size===0){listeners.delete(name);}}}"
         "function emit(name,detail){var set=listeners.get(name);if(set){Array.from(set).forEach(function(callback){callback(detail);});}window.dispatchEvent(new CustomEvent('zero-native:'+name,{detail:detail}));}"
@@ -459,7 +478,13 @@ static NSString *ZeroNativeAppKitBridgeScript(void) {
         "saveFile:function(options){return invoke('zero-native.dialog.saveFile',options||{});},"
         "showMessage:function(options){return invoke('zero-native.dialog.showMessage',options||{});}"
         "});"
-        "Object.defineProperty(window,'zero',{value:Object.freeze({invoke:invoke,on:on,off:off,windows:windows,dialogs:dialogs,_complete:complete,_emit:emit}),configurable:false});"
+        "var webviews=Object.freeze({"
+        "create:function(options){return invoke('zero-native.overlay.create',framePayload(options||{})).then(webviewHandle);},"
+        "setFrame:function(options){return invoke('zero-native.overlay.setFrame',framePayload(options||{}));},"
+        "navigate:function(options){if(typeof options==='string'){options={url:options};}options=options||{};return invoke('zero-native.overlay.navigate',{label:options.label,windowId:options.windowId,url:options.url});},"
+        "close:function(options){if(typeof options==='string'){options={label:options};}options=options||{};return invoke('zero-native.overlay.close',{label:options.label,windowId:options.windowId});}"
+        "});"
+        "Object.defineProperty(window,'zero',{value:Object.freeze({invoke:invoke,on:on,off:off,windows:windows,dialogs:dialogs,webviews:webviews,_complete:complete,_emit:emit}),configurable:false});"
         "})();";
 }
 

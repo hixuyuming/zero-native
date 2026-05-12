@@ -14,11 +14,15 @@
             .{ .name = "zero-native.window.create", .permissions = .{ "window" }, .origins = .{ "zero://inline", "zero://app" } },
             .{ .name = "zero-native.window.focus", .permissions = .{ "window" }, .origins = .{ "zero://inline", "zero://app" } },
             .{ .name = "zero-native.window.close", .permissions = .{ "window" }, .origins = .{ "zero://inline", "zero://app" } },
+            .{ .name = "zero-native.overlay.create", .permissions = .{ "window" }, .origins = .{ "zero://inline", "zero://app" } },
+            .{ .name = "zero-native.overlay.setFrame", .permissions = .{ "window" }, .origins = .{ "zero://inline", "zero://app" } },
+            .{ .name = "zero-native.overlay.navigate", .permissions = .{ "window" }, .origins = .{ "zero://inline", "zero://app" } },
+            .{ .name = "zero-native.overlay.close", .permissions = .{ "window" }, .origins = .{ "zero://inline", "zero://app" } },
         },
     },
     .security = .{
         .navigation = .{
-            .allowed_origins = .{ "zero://app", "zero://inline", "http://127.0.0.1:5173" },
+            .allowed_origins = .{ "zero://app", "zero://inline", "https://example.com", "http://127.0.0.1:5173" },
             .external_links = .{ .action = "deny" },
         },
     },

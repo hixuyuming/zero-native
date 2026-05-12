@@ -231,6 +231,50 @@ int zero_native_gtk_close_window(Host *host, uint64_t window_id) {
     return 1;
 }
 
+int zero_native_gtk_create_overlay(Host *host, uint64_t window_id, const char *label, size_t label_len, const char *url, size_t url_len, double x, double y, double width, double height) {
+    (void)host;
+    (void)window_id;
+    (void)label;
+    (void)label_len;
+    (void)url;
+    (void)url_len;
+    (void)x;
+    (void)y;
+    (void)width;
+    (void)height;
+    return 0;
+}
+
+int zero_native_gtk_set_overlay_frame(Host *host, uint64_t window_id, const char *label, size_t label_len, double x, double y, double width, double height) {
+    (void)host;
+    (void)window_id;
+    (void)label;
+    (void)label_len;
+    (void)x;
+    (void)y;
+    (void)width;
+    (void)height;
+    return 0;
+}
+
+int zero_native_gtk_navigate_overlay(Host *host, uint64_t window_id, const char *label, size_t label_len, const char *url, size_t url_len) {
+    (void)host;
+    (void)window_id;
+    (void)label;
+    (void)label_len;
+    (void)url;
+    (void)url_len;
+    return 0;
+}
+
+int zero_native_gtk_close_overlay(Host *host, uint64_t window_id, const char *label, size_t label_len) {
+    (void)host;
+    (void)window_id;
+    (void)label;
+    (void)label_len;
+    return 0;
+}
+
 size_t zero_native_gtk_clipboard_read(Host *host, char *buffer, size_t buffer_len) {
     (void)host;
     (void)buffer;

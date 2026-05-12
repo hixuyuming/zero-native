@@ -94,6 +94,10 @@ void zero_native_gtk_set_security_policy(zero_native_gtk_host_t *host, const cha
 int zero_native_gtk_create_window(zero_native_gtk_host_t *host, uint64_t window_id, const char *window_title, size_t window_title_len, const char *window_label, size_t window_label_len, double x, double y, double width, double height, int restore_frame);
 int zero_native_gtk_focus_window(zero_native_gtk_host_t *host, uint64_t window_id);
 int zero_native_gtk_close_window(zero_native_gtk_host_t *host, uint64_t window_id);
+int zero_native_gtk_create_overlay(zero_native_gtk_host_t *host, uint64_t window_id, const char *label, size_t label_len, const char *url, size_t url_len, double x, double y, double width, double height);
+int zero_native_gtk_set_overlay_frame(zero_native_gtk_host_t *host, uint64_t window_id, const char *label, size_t label_len, double x, double y, double width, double height);
+int zero_native_gtk_navigate_overlay(zero_native_gtk_host_t *host, uint64_t window_id, const char *label, size_t label_len, const char *url, size_t url_len);
+int zero_native_gtk_close_overlay(zero_native_gtk_host_t *host, uint64_t window_id, const char *label, size_t label_len);
 size_t zero_native_gtk_clipboard_read(zero_native_gtk_host_t *host, char *buffer, size_t buffer_len);
 void zero_native_gtk_clipboard_write(zero_native_gtk_host_t *host, const char *text, size_t text_len);
 zero_native_gtk_open_dialog_result_t zero_native_gtk_show_open_dialog(zero_native_gtk_host_t *host, const zero_native_gtk_open_dialog_opts_t *opts, char *buffer, size_t buffer_len);

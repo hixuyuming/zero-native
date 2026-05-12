@@ -740,6 +740,7 @@ fn runnerZig() []const u8 {
     \\    bridge: ?zero_native.BridgeDispatcher = null,
     \\    builtin_bridge: zero_native.BridgePolicy = .{},
     \\    security: zero_native.SecurityPolicy = .{},
+        \\    js_window_api: bool = false,
     \\
     \\    fn appInfo(self: RunOptions) zero_native.AppInfo {
     \\        return .{
@@ -792,6 +793,7 @@ fn runnerZig() []const u8 {
     \\        .bridge = options.bridge,
     \\        .builtin_bridge = options.builtin_bridge,
     \\        .security = options.security,
+        \\        .js_window_api = options.js_window_api,
     \\        .automation = if (build_options.automation) zero_native.automation.Server.init(init.io, ".zig-cache/zero-native-automation", app_info.resolvedWindowTitle()) else null,
     \\        .window_state_store = store,
     \\    });
@@ -826,6 +828,7 @@ fn runnerZig() []const u8 {
     \\        .bridge = options.bridge,
     \\        .builtin_bridge = options.builtin_bridge,
     \\        .security = options.security,
+        \\        .js_window_api = options.js_window_api,
     \\        .automation = if (build_options.automation) zero_native.automation.Server.init(init.io, ".zig-cache/zero-native-automation", app_info.resolvedWindowTitle()) else null,
     \\        .window_state_store = store,
     \\    });
@@ -860,6 +863,7 @@ fn runnerZig() []const u8 {
     \\        .bridge = options.bridge,
     \\        .builtin_bridge = options.builtin_bridge,
     \\        .security = options.security,
+        \\        .js_window_api = options.js_window_api,
     \\        .automation = if (build_options.automation) zero_native.automation.Server.init(init.io, ".zig-cache/zero-native-automation", app_info.resolvedWindowTitle()) else null,
     \\        .window_state_store = store,
     \\    });
@@ -894,6 +898,7 @@ fn runnerZig() []const u8 {
     \\        .bridge = options.bridge,
     \\        .builtin_bridge = options.builtin_bridge,
     \\        .security = options.security,
+        \\        .js_window_api = options.js_window_api,
     \\        .automation = if (build_options.automation) zero_native.automation.Server.init(init.io, ".zig-cache/zero-native-automation", app_info.resolvedWindowTitle()) else null,
     \\        .window_state_store = store,
     \\    });

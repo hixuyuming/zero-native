@@ -13,6 +13,8 @@ pub const Error = error{
     WindowSourceTooLarge,
     FocusFailed,
     CloseFailed,
+    MissingOverlayUrl,
+    InvalidOverlayOptions,
     OverlayNotFound,
     OverlayLimitReached,
     DuplicateOverlayLabel,
@@ -146,6 +148,14 @@ pub const OverlayOptions = struct {
     label: []const u8,
     url: []const u8,
     frame: geometry.RectF = geometry.RectF.init(0, 0, 0, 0),
+};
+
+pub const OverlayInfo = struct {
+    window_id: WindowId = 1,
+    label: []const u8 = "overlay",
+    url: []const u8 = "",
+    frame: geometry.RectF = geometry.RectF.init(0, 0, 0, 0),
+    open: bool = true,
 };
 
 pub const AppInfo = struct {
@@ -593,18 +603,25 @@ pub const NullPlatform = struct {
         const index = self.findWindowIndex(window_id) orelse return error.WindowNotFound;
         self.windows[index].open = false;
         self.windows[index].focused = false;
+        self.removeOverlaysForWindow(window_id);
     }
 
     fn createOverlay(context: ?*anyopaque, options: OverlayOptions) anyerror!void {
         const self: *NullPlatform = @ptrCast(@alignCast(context.?));
-        const index = self.findOverlayIndex(options.window_id, options.label) orelse blk: {
-            if (self.overlay_count >= max_overlays) return error.OverlayLimitReached;
-            const next = self.overlay_count;
-            self.overlay_count += 1;
-            break :blk next;
-        };
+        if (self.findWindowIndex(options.window_id)) |window_index| {
+            if (!self.windows[window_index].open) return error.WindowNotFound;
+        } else if (options.window_id != 1) {
+            return error.WindowNotFound;
+        }
+        if (options.label.len == 0) return error.InvalidOverlayOptions;
+        if (options.url.len == 0) return error.MissingOverlayUrl;
         if (options.label.len > max_overlay_label_bytes) return error.OverlayLabelTooLarge;
         if (options.url.len > max_overlay_url_bytes) return error.OverlayUrlTooLarge;
+        if (!isValidOverlayFrame(options.frame)) return error.InvalidOverlayOptions;
+        if (self.findOverlayIndex(options.window_id, options.label) != null) return error.DuplicateOverlayLabel;
+        if (self.overlay_count >= max_overlays) return error.OverlayLimitReached;
+        const index = self.overlay_count;
+        self.overlay_count += 1;
         var overlay = &self.overlays[index];
         overlay.window_id = options.window_id;
         overlay.frame = options.frame;
@@ -618,12 +635,14 @@ pub const NullPlatform = struct {
     fn setOverlayFrame(context: ?*anyopaque, window_id: WindowId, label: []const u8, frame: geometry.RectF) anyerror!void {
         const self: *NullPlatform = @ptrCast(@alignCast(context.?));
         const index = self.findOverlayIndex(window_id, label) orelse return error.OverlayNotFound;
+        if (!isValidOverlayFrame(frame)) return error.InvalidOverlayOptions;
         self.overlays[index].frame = frame;
     }
 
     fn navigateOverlay(context: ?*anyopaque, window_id: WindowId, label: []const u8, url: []const u8) anyerror!void {
         const self: *NullPlatform = @ptrCast(@alignCast(context.?));
         const index = self.findOverlayIndex(window_id, label) orelse return error.OverlayNotFound;
+        if (url.len == 0) return error.MissingOverlayUrl;
         if (url.len > max_overlay_url_bytes) return error.OverlayUrlTooLarge;
         var overlay = &self.overlays[index];
         @memcpy(overlay.url_storage[0..url.len], url);
@@ -633,7 +652,7 @@ pub const NullPlatform = struct {
     fn closeOverlay(context: ?*anyopaque, window_id: WindowId, label: []const u8) anyerror!void {
         const self: *NullPlatform = @ptrCast(@alignCast(context.?));
         const index = self.findOverlayIndex(window_id, label) orelse return error.OverlayNotFound;
-        self.overlays[index].open = false;
+        self.removeOverlayAt(index);
     }
 
     fn configureSecurityPolicy(context: ?*anyopaque, policy: security.Policy) anyerror!void {
@@ -657,9 +676,29 @@ pub const NullPlatform = struct {
 
     fn findOverlayIndex(self: *const NullPlatform, window_id: WindowId, label: []const u8) ?usize {
         for (self.overlays[0..self.overlay_count], 0..) |overlay, index| {
-            if (overlay.window_id == window_id and std.mem.eql(u8, overlay.label, label)) return index;
+            if (overlay.open and overlay.window_id == window_id and std.mem.eql(u8, overlay.label, label)) return index;
         }
         return null;
+    }
+
+    fn removeOverlayAt(self: *NullPlatform, index: usize) void {
+        if (index >= self.overlay_count) return;
+        var cursor = index;
+        while (cursor + 1 < self.overlay_count) : (cursor += 1) {
+            self.overlays[cursor] = self.overlays[cursor + 1];
+        }
+        self.overlay_count -= 1;
+    }
+
+    fn removeOverlaysForWindow(self: *NullPlatform, window_id: WindowId) void {
+        var index: usize = 0;
+        while (index < self.overlay_count) {
+            if (self.overlays[index].window_id == window_id) {
+                self.removeOverlayAt(index);
+            } else {
+                index += 1;
+            }
+        }
     }
 
     pub fn lastBridgeResponse(self: *const NullPlatform) []const u8 {
@@ -680,6 +719,10 @@ const NullOverlay = struct {
     label_storage: [max_overlay_label_bytes]u8 = undefined,
     url_storage: [max_overlay_url_bytes]u8 = undefined,
 };
+
+fn isValidOverlayFrame(frame: geometry.RectF) bool {
+    return frame.x >= 0 and frame.y >= 0 and frame.width > 0 and frame.height > 0;
+}
 
 pub const macos = @import("macos/root.zig");
 pub const linux = @import("linux/root.zig");
@@ -725,6 +768,31 @@ test "null platform records bridge response window routing" {
 
     try std.testing.expectEqual(@as(WindowId, 7), null_platform.lastBridgeResponseWindowId());
     try std.testing.expectEqualStrings("{\"ok\":true}", null_platform.lastBridgeResponse());
+}
+
+test "null platform records overlay lifecycle" {
+    var null_platform = NullPlatform.init(.{});
+    const services = null_platform.platform().services;
+
+    try services.createOverlay(.{
+        .label = "preview",
+        .url = "https://example.com",
+        .frame = geometry.RectF.init(10, 20, 300, 200),
+    });
+    try std.testing.expectEqual(@as(usize, 1), null_platform.overlay_count);
+    try std.testing.expectEqualStrings("preview", null_platform.overlays[0].label);
+    try std.testing.expectError(error.DuplicateOverlayLabel, services.createOverlay(.{
+        .label = "preview",
+        .url = "https://example.org",
+        .frame = geometry.RectF.init(10, 20, 300, 200),
+    }));
+
+    try services.setOverlayFrame(1, "preview", geometry.RectF.init(11, 22, 333, 222));
+    try std.testing.expectEqual(@as(f32, 333), null_platform.overlays[0].frame.width);
+    try services.navigateOverlay(1, "preview", "https://example.org");
+    try std.testing.expectEqualStrings("https://example.org", null_platform.overlays[0].url);
+    try services.closeOverlay(1, "preview");
+    try std.testing.expectEqual(@as(usize, 0), null_platform.overlay_count);
 }
 
 test "webview asset source records production bundle options" {

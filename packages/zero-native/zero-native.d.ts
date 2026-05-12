@@ -34,6 +34,48 @@ export interface ZeroNativeCreateWindowOptions {
   url?: string;
 }
 
+export interface ZeroNativeRect {
+  x?: number;
+  y?: number;
+  width: number;
+  height: number;
+}
+
+export interface ZeroNativeWebViewInfo {
+  label: string;
+  windowId: number;
+}
+
+export interface ZeroNativeCreateWebViewOptions {
+  label?: string;
+  windowId?: number;
+  url: string;
+  frame: ZeroNativeRect;
+}
+
+export interface ZeroNativeSetWebViewFrameOptions {
+  label?: string;
+  windowId?: number;
+  frame: ZeroNativeRect;
+}
+
+export interface ZeroNativeNavigateWebViewOptions {
+  label?: string;
+  windowId?: number;
+  url: string;
+}
+
+export interface ZeroNativeCloseWebViewOptions {
+  label?: string;
+  windowId?: number;
+}
+
+export interface ZeroNativeWebViewHandle extends ZeroNativeWebViewInfo {
+  setFrame(frame: ZeroNativeRect): Promise<ZeroNativeWebViewInfo>;
+  navigate(url: string): Promise<ZeroNativeWebViewInfo>;
+  close(): Promise<ZeroNativeWebViewInfo>;
+}
+
 export interface ZeroNativeOpenFileOptions {
   title?: string;
   defaultPath?: string;
@@ -66,6 +108,13 @@ export interface ZeroNativeApi {
     list(): Promise<ZeroNativeWindowInfo[]>;
     focus(value: number | string): Promise<ZeroNativeWindowInfo>;
     close(value: number | string): Promise<ZeroNativeWindowInfo>;
+  };
+  webviews: {
+    create(options: ZeroNativeCreateWebViewOptions): Promise<ZeroNativeWebViewHandle>;
+    setFrame(options: ZeroNativeSetWebViewFrameOptions): Promise<ZeroNativeWebViewInfo>;
+    navigate(options: ZeroNativeNavigateWebViewOptions): Promise<ZeroNativeWebViewInfo>;
+    navigate(url: string): Promise<ZeroNativeWebViewInfo>;
+    close(options?: ZeroNativeCloseWebViewOptions | string): Promise<ZeroNativeWebViewInfo>;
   };
   dialogs: {
     openFile(options?: ZeroNativeOpenFileOptions): Promise<string[] | null>;

@@ -23,6 +23,7 @@ export const navSections: NavSection[] = [
     items: [
       { name: "Web Engines", href: "/web-engines" },
       { name: "Windows", href: "/windows" },
+      { name: "Overlay WebViews", href: "/webviews" },
       { name: "Bridge", href: "/bridge" },
       { name: "Builtin Commands", href: "/bridge/builtin-commands" },
       { name: "Dialogs", href: "/dialogs" },

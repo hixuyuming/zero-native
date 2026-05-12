@@ -1,0 +1,78 @@
+# Overlay WebViews
+
+Overlay WebViews let an app place an isolated native WebView above an existing window. They are useful for previews, auth flows, embedded docs, and other content that should not receive the app bridge.
+
+## JavaScript API
+
+Enable the built-in WebView commands from an allowed origin:
+
+```zig
+const app_permissions = [_][]const u8{zero_native.security.permission_window};
+
+.security = .{
+    .permissions = &app_permissions,
+    .navigation = .{ .allowed_origins = &.{ "zero://app", "https://example.com" } },
+},
+.js_window_api = true,
+```
+
+Then create and manage an overlay from JavaScript:
+
+```javascript
+const preview = await window.zero.webviews.create({
+  label: "preview",
+  windowId: 1,
+  url: "https://example.com",
+  frame: { x: 24, y: 24, width: 480, height: 320 },
+});
+
+await preview.setFrame({ x: 32, y: 32, width: 640, height: 420 });
+await preview.navigate("https://example.com/docs");
+await preview.close();
+```
+
+Coordinates are logical content coordinates relative to the parent window: `x: 0, y: 0` is the top-left corner of the window content area.
+
+## Lifecycle
+
+Overlay labels are unique per parent window. Creating a second overlay with the same label fails; close the existing overlay first if you want to replace it.
+
+When a parent window closes, its overlays are closed with it. Overlay pages do not receive `window.zero`, so untrusted content cannot call native bridge commands through the app bridge.
+
+## Commands
+
+The helper calls these built-in bridge commands internally:
+
+<table>
+  <thead>
+    <tr>
+      <th>Helper</th>
+      <th>Command</th>
+      <th>Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>window.zero.webviews.create()</code></td>
+      <td><code>zero-native.overlay.create</code></td>
+      <td>Create an overlay WebView in a parent window</td>
+    </tr>
+    <tr>
+      <td><code>window.zero.webviews.setFrame()</code></td>
+      <td><code>zero-native.overlay.setFrame</code></td>
+      <td>Move or resize an overlay</td>
+    </tr>
+    <tr>
+      <td><code>window.zero.webviews.navigate()</code></td>
+      <td><code>zero-native.overlay.navigate</code></td>
+      <td>Navigate an overlay to a new URL</td>
+    </tr>
+    <tr>
+      <td><code>window.zero.webviews.close()</code></td>
+      <td><code>zero-native.overlay.close</code></td>
+      <td>Close an overlay</td>
+    </tr>
+  </tbody>
+</table>
+
+Overlay URLs are checked against the runtime navigation policy. Add the target origin to `security.navigation.allowed_origins` before loading it.

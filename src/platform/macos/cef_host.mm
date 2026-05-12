@@ -268,6 +268,8 @@ static const char *ZeroNativeCefBridgeScript() {
         "});"
         "}"
         "function selector(value){return typeof value==='number'?{id:value}:{label:String(value)};}"
+        "function framePayload(options){options=options||{};var frame=options.frame||options;return {label:options.label,windowId:options.windowId,url:options.url,frame:{x:frame.x||0,y:frame.y||0,width:frame.width,height:frame.height}};}"
+        "function webviewHandle(info){return Object.freeze({label:info.label,windowId:info.windowId,setFrame:function(frame){return webviews.setFrame({label:info.label,windowId:info.windowId,frame:frame});},navigate:function(url){return webviews.navigate({label:info.label,windowId:info.windowId,url:url});},close:function(){return webviews.close({label:info.label,windowId:info.windowId});}});}"
         "function on(name,callback){if(typeof callback!=='function'){throw new TypeError('callback must be a function');}var set=listeners.get(name);if(!set){set=new Set();listeners.set(name,set);}set.add(callback);return function(){off(name,callback);};}"
         "function off(name,callback){var set=listeners.get(name);if(set){set.delete(callback);if(set.size===0){listeners.delete(name);}}}"
         "function emit(name,detail){var set=listeners.get(name);if(set){Array.from(set).forEach(function(callback){callback(detail);});}window.dispatchEvent(new CustomEvent('zero-native:'+name,{detail:detail}));}"
@@ -282,7 +284,13 @@ static const char *ZeroNativeCefBridgeScript() {
         "saveFile:function(options){return invoke('zero-native.dialog.saveFile',options||{});},"
         "showMessage:function(options){return invoke('zero-native.dialog.showMessage',options||{});}"
         "});"
-        "Object.defineProperty(window,'zero',{value:Object.freeze({invoke:invoke,on:on,off:off,windows:windows,dialogs:dialogs,_complete:complete,_emit:emit}),configurable:false});"
+        "var webviews=Object.freeze({"
+        "create:function(options){return invoke('zero-native.overlay.create',framePayload(options||{})).then(webviewHandle);},"
+        "setFrame:function(options){return invoke('zero-native.overlay.setFrame',framePayload(options||{}));},"
+        "navigate:function(options){if(typeof options==='string'){options={url:options};}options=options||{};return invoke('zero-native.overlay.navigate',{label:options.label,windowId:options.windowId,url:options.url});},"
+        "close:function(options){if(typeof options==='string'){options={label:options};}options=options||{};return invoke('zero-native.overlay.close',{label:options.label,windowId:options.windowId});}"
+        "});"
+        "Object.defineProperty(window,'zero',{value:Object.freeze({invoke:invoke,on:on,off:off,windows:windows,dialogs:dialogs,webviews:webviews,_complete:complete,_emit:emit}),configurable:false});"
         "})();";
 }
 
@@ -321,6 +329,7 @@ static const char *ZeroNativeCefBridgeScript() {
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *internalURLPrefixes;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *windowLabels;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *fallbackURLs;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSView *> *overlayViews;
 @property(nonatomic, strong) NSTimer *timer;
 @property(nonatomic, strong) NSString *appName;
 @property(nonatomic, assign) zero_native_appkit_event_callback_t callback;
@@ -359,6 +368,11 @@ static const char *ZeroNativeCefBridgeScript() {
 - (BOOL)isInternalURL:(NSURL *)url;
 - (BOOL)allowsNavigationURL:(NSURL *)url;
 - (BOOL)openExternalURLIfAllowed:(NSURL *)url;
+- (BOOL)createOverlayInWindow:(uint64_t)windowId label:(NSString *)label url:(NSString *)url x:(double)x y:(double)y width:(double)width height:(double)height;
+- (BOOL)setOverlayFrameInWindow:(uint64_t)windowId label:(NSString *)label x:(double)x y:(double)y width:(double)width height:(double)height;
+- (BOOL)navigateOverlayInWindow:(uint64_t)windowId label:(NSString *)label url:(NSString *)url;
+- (BOOL)closeOverlayInWindow:(uint64_t)windowId label:(NSString *)label;
+- (void)closeOverlaysInWindow:(uint64_t)windowId;
 - (void)setBrowser:(CefRefPtr<CefBrowser>)browser windowId:(uint64_t)windowId;
 - (NSString *)fallbackURLForWindowId:(uint64_t)windowId;
 - (NSString *)bridgeOriginForWindowId:(uint64_t)windowId sourceURL:(NSString *)sourceURL;
@@ -390,6 +404,7 @@ static const char *ZeroNativeCefBridgeScript() {
 - (void)windowWillClose:(NSNotification *)notification {
     (void)notification;
     [self.host emitWindowFrameForWindowId:self.windowId open:NO];
+    [self.host closeOverlaysInWindow:self.windowId];
     NSNumber *key = @(self.windowId);
     [self.host.windows removeObjectForKey:key];
     [self.host.browserContainers removeObjectForKey:key];
@@ -426,6 +441,7 @@ static const char *ZeroNativeCefBridgeScript() {
     self.internalURLPrefixes = [[NSMutableDictionary alloc] init];
     self.windowLabels = [[NSMutableDictionary alloc] init];
     self.fallbackURLs = [[NSMutableDictionary alloc] init];
+    self.overlayViews = [[NSMutableDictionary alloc] init];
     self.cefClients = new std::map<uint64_t, CefRefPtr<ZeroNativeCefClient>>();
     self.browsers = new std::map<uint64_t, CefRefPtr<CefBrowser>>();
     self.allowedNavigationOrigins = @[ @"zero://app", @"zero://inline" ];
@@ -577,6 +593,7 @@ static const char *ZeroNativeCefBridgeScript() {
         if (!window) {
             return;
         }
+        [self closeOverlaysInWindow:windowId];
         if (self.browsers) {
             auto it = self.browsers->find(windowId);
             if (it != self.browsers->end() && it->second) {
@@ -748,6 +765,76 @@ static const char *ZeroNativeCefBridgeScript() {
     CefBrowserSettings browserSettings;
     CefRefPtr<ZeroNativeCefClient> client = (*self.cefClients)[windowId];
     CefBrowserHost::CreateBrowser(windowInfo, client.get(), std::string(urlString.UTF8String), browserSettings, nullptr, nullptr);
+}
+
+- (NSString *)overlayKeyForWindow:(uint64_t)windowId label:(NSString *)label {
+    return [NSString stringWithFormat:@"%llu:%@", windowId, label ?: @""];
+}
+
+- (NSRect)overlayFrameForContainer:(NSView *)container x:(double)x y:(double)y width:(double)width height:(double)height {
+    CGFloat nativeY = container.isFlipped ? y : container.bounds.size.height - y - height;
+    return NSMakeRect(x, nativeY, width, height);
+}
+
+- (BOOL)createOverlayInWindow:(uint64_t)windowId label:(NSString *)label url:(NSString *)url x:(double)x y:(double)y width:(double)width height:(double)height {
+    if (label.length == 0 || url.length == 0 || width <= 0 || height <= 0 || x < 0 || y < 0) return NO;
+    NSView *container = self.browserContainers[@(windowId)] ?: (windowId == 1 ? self.browserContainer : nil);
+    if (!container) return NO;
+    NSURL *targetURL = [NSURL URLWithString:url];
+    if (!targetURL || ![self allowsNavigationURL:targetURL]) return NO;
+    NSString *key = [self overlayKeyForWindow:windowId label:label];
+    if (self.overlayViews[key]) return NO;
+
+    NSTextField *overlay = [NSTextField labelWithString:url];
+    overlay.frame = [self overlayFrameForContainer:container x:x y:y width:width height:height];
+    overlay.autoresizingMask = NSViewNotSizable;
+    overlay.bezeled = YES;
+    overlay.drawsBackground = YES;
+    overlay.backgroundColor = NSColor.windowBackgroundColor;
+    overlay.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    [container addSubview:overlay positioned:NSWindowAbove relativeTo:nil];
+    self.overlayViews[key] = overlay;
+    return YES;
+}
+
+- (BOOL)setOverlayFrameInWindow:(uint64_t)windowId label:(NSString *)label x:(double)x y:(double)y width:(double)width height:(double)height {
+    if (label.length == 0 || width <= 0 || height <= 0 || x < 0 || y < 0) return NO;
+    NSView *container = self.browserContainers[@(windowId)] ?: (windowId == 1 ? self.browserContainer : nil);
+    NSView *overlay = self.overlayViews[[self overlayKeyForWindow:windowId label:label]];
+    if (!container || !overlay) return NO;
+    overlay.frame = [self overlayFrameForContainer:container x:x y:y width:width height:height];
+    return YES;
+}
+
+- (BOOL)navigateOverlayInWindow:(uint64_t)windowId label:(NSString *)label url:(NSString *)url {
+    if (label.length == 0 || url.length == 0) return NO;
+    NSURL *targetURL = [NSURL URLWithString:url];
+    if (!targetURL || ![self allowsNavigationURL:targetURL]) return NO;
+    NSView *overlay = self.overlayViews[[self overlayKeyForWindow:windowId label:label]];
+    if (!overlay) return NO;
+    if ([overlay isKindOfClass:[NSTextField class]]) {
+        ((NSTextField *)overlay).stringValue = url;
+    }
+    return YES;
+}
+
+- (BOOL)closeOverlayInWindow:(uint64_t)windowId label:(NSString *)label {
+    NSString *key = [self overlayKeyForWindow:windowId label:label];
+    NSView *overlay = self.overlayViews[key];
+    if (!overlay) return NO;
+    [overlay removeFromSuperview];
+    [self.overlayViews removeObjectForKey:key];
+    return YES;
+}
+
+- (void)closeOverlaysInWindow:(uint64_t)windowId {
+    NSString *prefix = [NSString stringWithFormat:@"%llu:", windowId];
+    NSArray<NSString *> *keys = [self.overlayViews.allKeys copy];
+    for (NSString *key in keys) {
+        if (![key hasPrefix:prefix]) continue;
+        [self.overlayViews[key] removeFromSuperview];
+        [self.overlayViews removeObjectForKey:key];
+    }
 }
 
 - (void)setAllowedNavigationOrigins:(NSArray<NSString *> *)origins externalURLs:(NSArray<NSString *> *)externalURLs externalAction:(NSInteger)externalAction {
@@ -1030,47 +1117,29 @@ int zero_native_appkit_close_window(zero_native_appkit_host_t *host, uint64_t wi
 }
 
 int zero_native_appkit_create_overlay(zero_native_appkit_host_t *host, uint64_t window_id, const char *label, size_t label_len, const char *url, size_t url_len, double x, double y, double width, double height) {
-    (void)host;
-    (void)window_id;
-    (void)label;
-    (void)label_len;
-    (void)url;
-    (void)url_len;
-    (void)x;
-    (void)y;
-    (void)width;
-    (void)height;
-    return 0;
+    ZeroNativeChromiumHost *object = (__bridge ZeroNativeChromiumHost *)host;
+    NSString *labelString = label ? [[NSString alloc] initWithBytes:label length:label_len encoding:NSUTF8StringEncoding] : @"";
+    NSString *urlString = url ? [[NSString alloc] initWithBytes:url length:url_len encoding:NSUTF8StringEncoding] : @"";
+    return [object createOverlayInWindow:window_id label:labelString ?: @"" url:urlString ?: @"" x:x y:y width:width height:height] ? 1 : 0;
 }
 
 int zero_native_appkit_set_overlay_frame(zero_native_appkit_host_t *host, uint64_t window_id, const char *label, size_t label_len, double x, double y, double width, double height) {
-    (void)host;
-    (void)window_id;
-    (void)label;
-    (void)label_len;
-    (void)x;
-    (void)y;
-    (void)width;
-    (void)height;
-    return 0;
+    ZeroNativeChromiumHost *object = (__bridge ZeroNativeChromiumHost *)host;
+    NSString *labelString = label ? [[NSString alloc] initWithBytes:label length:label_len encoding:NSUTF8StringEncoding] : @"";
+    return [object setOverlayFrameInWindow:window_id label:labelString ?: @"" x:x y:y width:width height:height] ? 1 : 0;
 }
 
 int zero_native_appkit_navigate_overlay(zero_native_appkit_host_t *host, uint64_t window_id, const char *label, size_t label_len, const char *url, size_t url_len) {
-    (void)host;
-    (void)window_id;
-    (void)label;
-    (void)label_len;
-    (void)url;
-    (void)url_len;
-    return 0;
+    ZeroNativeChromiumHost *object = (__bridge ZeroNativeChromiumHost *)host;
+    NSString *labelString = label ? [[NSString alloc] initWithBytes:label length:label_len encoding:NSUTF8StringEncoding] : @"";
+    NSString *urlString = url ? [[NSString alloc] initWithBytes:url length:url_len encoding:NSUTF8StringEncoding] : @"";
+    return [object navigateOverlayInWindow:window_id label:labelString ?: @"" url:urlString ?: @""] ? 1 : 0;
 }
 
 int zero_native_appkit_close_overlay(zero_native_appkit_host_t *host, uint64_t window_id, const char *label, size_t label_len) {
-    (void)host;
-    (void)window_id;
-    (void)label;
-    (void)label_len;
-    return 0;
+    ZeroNativeChromiumHost *object = (__bridge ZeroNativeChromiumHost *)host;
+    NSString *labelString = label ? [[NSString alloc] initWithBytes:label length:label_len encoding:NSUTF8StringEncoding] : @"";
+    return [object closeOverlayInWindow:window_id label:labelString ?: @""] ? 1 : 0;
 }
 
 size_t zero_native_appkit_clipboard_read(zero_native_appkit_host_t *host, char *buffer, size_t buffer_len) {

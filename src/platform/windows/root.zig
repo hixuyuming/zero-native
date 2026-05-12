@@ -53,6 +53,10 @@ extern fn zero_native_windows_set_security_policy(host: *WindowsHost, allowed_or
 extern fn zero_native_windows_create_window(host: *WindowsHost, window_id: u64, window_title: [*]const u8, window_title_len: usize, window_label: [*]const u8, window_label_len: usize, x: f64, y: f64, width: f64, height: f64, restore_frame: c_int) c_int;
 extern fn zero_native_windows_focus_window(host: *WindowsHost, window_id: u64) c_int;
 extern fn zero_native_windows_close_window(host: *WindowsHost, window_id: u64) c_int;
+extern fn zero_native_windows_create_overlay(host: *WindowsHost, window_id: u64, label: [*]const u8, label_len: usize, url: [*]const u8, url_len: usize, x: f64, y: f64, width: f64, height: f64) c_int;
+extern fn zero_native_windows_set_overlay_frame(host: *WindowsHost, window_id: u64, label: [*]const u8, label_len: usize, x: f64, y: f64, width: f64, height: f64) c_int;
+extern fn zero_native_windows_navigate_overlay(host: *WindowsHost, window_id: u64, label: [*]const u8, label_len: usize, url: [*]const u8, url_len: usize) c_int;
+extern fn zero_native_windows_close_overlay(host: *WindowsHost, window_id: u64, label: [*]const u8, label_len: usize) c_int;
 extern fn zero_native_windows_clipboard_read(host: *WindowsHost, buffer: [*]u8, buffer_len: usize) usize;
 extern fn zero_native_windows_clipboard_write(host: *WindowsHost, text: [*]const u8, text_len: usize) void;
 
@@ -109,6 +113,10 @@ pub const WindowsPlatform = struct {
                 .create_window_fn = createWindow,
                 .focus_window_fn = focusWindow,
                 .close_window_fn = closeWindow,
+                .create_overlay_fn = createOverlay,
+                .set_overlay_frame_fn = setOverlayFrame,
+                .navigate_overlay_fn = navigateOverlay,
+                .close_overlay_fn = closeOverlay,
                 .configure_security_policy_fn = configureSecurityPolicy,
                 .emit_window_event_fn = emitWindowEvent,
             },
@@ -274,6 +282,27 @@ fn focusWindow(context: ?*anyopaque, window_id: platform_mod.WindowId) anyerror!
 fn closeWindow(context: ?*anyopaque, window_id: platform_mod.WindowId) anyerror!void {
     const self: *WindowsPlatform = @ptrCast(@alignCast(context.?));
     if (zero_native_windows_close_window(self.host, window_id) == 0) return error.CloseFailed;
+}
+
+fn createOverlay(context: ?*anyopaque, options: platform_mod.OverlayOptions) anyerror!void {
+    const self: *WindowsPlatform = @ptrCast(@alignCast(context.?));
+    const frame = options.frame;
+    if (zero_native_windows_create_overlay(self.host, options.window_id, options.label.ptr, options.label.len, options.url.ptr, options.url.len, frame.x, frame.y, frame.width, frame.height) == 0) return error.CreateFailed;
+}
+
+fn setOverlayFrame(context: ?*anyopaque, window_id: platform_mod.WindowId, label: []const u8, frame: geometry.RectF) anyerror!void {
+    const self: *WindowsPlatform = @ptrCast(@alignCast(context.?));
+    if (zero_native_windows_set_overlay_frame(self.host, window_id, label.ptr, label.len, frame.x, frame.y, frame.width, frame.height) == 0) return error.OverlayNotFound;
+}
+
+fn navigateOverlay(context: ?*anyopaque, window_id: platform_mod.WindowId, label: []const u8, url: []const u8) anyerror!void {
+    const self: *WindowsPlatform = @ptrCast(@alignCast(context.?));
+    if (zero_native_windows_navigate_overlay(self.host, window_id, label.ptr, label.len, url.ptr, url.len) == 0) return error.OverlayNotFound;
+}
+
+fn closeOverlay(context: ?*anyopaque, window_id: platform_mod.WindowId, label: []const u8) anyerror!void {
+    const self: *WindowsPlatform = @ptrCast(@alignCast(context.?));
+    if (zero_native_windows_close_overlay(self.host, window_id, label.ptr, label.len) == 0) return error.OverlayNotFound;
 }
 
 fn configureSecurityPolicy(context: ?*anyopaque, policy: security.Policy) anyerror!void {

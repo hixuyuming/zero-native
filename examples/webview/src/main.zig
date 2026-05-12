@@ -31,12 +31,17 @@ const html =
     \\      <button id="list-windows" type="button">List windows</button>
     \\      <button id="focus-window" type="button">Focus JS window</button>
     \\      <button id="close-window" type="button">Close JS window</button>
+    \\      <button id="open-webview" type="button">Open overlay WebView</button>
+    \\      <button id="resize-webview" type="button">Resize overlay</button>
+    \\      <button id="navigate-webview" type="button">Navigate overlay</button>
+    \\      <button id="close-webview" type="button">Close overlay</button>
     \\    </div>
     \\    <pre id="output">Bridge ready.</pre>
     \\  </main>
     \\  <script>
     \\    const output = document.querySelector("#output");
     \\    let jsWindow = null;
+    \\    let overlay = null;
     \\    function show(value) {
     \\      output.textContent = JSON.stringify(value, null, 2);
     \\    }
@@ -66,6 +71,26 @@ const html =
     \\    document.querySelector("#close-window").addEventListener("click", async () => {
     \\      if (jsWindow) show(await window.zero.windows.close(jsWindow.id));
     \\    });
+    \\    document.querySelector("#open-webview").addEventListener("click", async () => {
+    \\      overlay = await window.zero.webviews.create({
+    \\        label: "preview",
+    \\        url: "https://example.com",
+    \\        frame: { x: 24, y: 24, width: 420, height: 260 },
+    \\      });
+    \\      show(overlay);
+    \\    });
+    \\    document.querySelector("#resize-webview").addEventListener("click", async () => {
+    \\      if (overlay) show(await overlay.setFrame({ x: 36, y: 36, width: 520, height: 320 }));
+    \\    });
+    \\    document.querySelector("#navigate-webview").addEventListener("click", async () => {
+    \\      if (overlay) show(await overlay.navigate("https://example.com/?zero-native=1"));
+    \\    });
+    \\    document.querySelector("#close-webview").addEventListener("click", async () => {
+    \\      if (overlay) {
+    \\        show(await overlay.close());
+    \\        overlay = null;
+    \\      }
+    \\    });
     \\  </script>
     \\</body>
     \\</html>
@@ -80,6 +105,10 @@ const builtin_policies = [_]zero_native.BridgeCommandPolicy{
     .{ .name = "zero-native.window.create", .permissions = &window_permission, .origins = &example_origins },
     .{ .name = "zero-native.window.focus", .permissions = &window_permission, .origins = &example_origins },
     .{ .name = "zero-native.window.close", .permissions = &window_permission, .origins = &example_origins },
+    .{ .name = "zero-native.overlay.create", .permissions = &window_permission, .origins = &example_origins },
+    .{ .name = "zero-native.overlay.setFrame", .permissions = &window_permission, .origins = &example_origins },
+    .{ .name = "zero-native.overlay.navigate", .permissions = &window_permission, .origins = &example_origins },
+    .{ .name = "zero-native.overlay.close", .permissions = &window_permission, .origins = &example_origins },
 };
 
 const WebViewApp = struct {
@@ -129,7 +158,7 @@ pub fn main(init: std.process.Init) !void {
         .builtin_bridge = .{ .enabled = true, .commands = &builtin_policies },
         .security = .{
             .permissions = &app_permissions,
-            .navigation = .{ .allowed_origins = &.{ "zero://inline", "zero://app" } },
+            .navigation = .{ .allowed_origins = &.{ "zero://inline", "zero://app", "https://example.com" } },
         },
     }, init);
 }
