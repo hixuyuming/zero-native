@@ -165,6 +165,7 @@ pub const WebViewInfo = struct {
     url: []const u8 = "",
     frame: geometry.RectF = geometry.RectF.init(0, 0, 0, 0),
     layer: i32 = 0,
+    zoom: f64 = 1.0,
     transparent: bool = false,
     bridge_enabled: bool = false,
     open: bool = true,
@@ -372,6 +373,7 @@ pub const PlatformServices = struct {
 
     pub fn completeWebViewBridge(self: PlatformServices, window_id: WindowId, webview_label: []const u8, response: []const u8) anyerror!void {
         if (self.complete_webview_bridge_fn) |complete_fn| return complete_fn(self.context, window_id, webview_label, response);
+        if (!std.mem.eql(u8, webview_label, "main")) return error.UnsupportedService;
         return self.completeWindowBridge(window_id, response);
     }
 
@@ -583,7 +585,19 @@ pub const NullPlatform = struct {
     fn loadWindowWebView(context: ?*anyopaque, window_id: WindowId, source: WebViewSource) anyerror!void {
         const self: *NullPlatform = @ptrCast(@alignCast(context.?));
         if (window_id == 1) self.loaded_source = source;
-        const index = self.findWindowIndex(window_id) orelse if (window_id == 1) 0 else return error.WindowNotFound;
+        const index = self.findWindowIndex(window_id) orelse if (window_id == 1 and self.window_count == 0) blk: {
+            self.windows[0] = .{
+                .id = 1,
+                .label = "main",
+                .title = self.app_info.resolvedWindowTitle(),
+                .frame = geometry.RectF.fromSize(self.surface_value.size),
+                .scale_factor = self.surface_value.scale_factor,
+                .open = true,
+                .focused = true,
+            };
+            self.window_count = 1;
+            break :blk 0;
+        } else return error.WindowNotFound;
         if (index >= self.window_sources.len) return error.WindowNotFound;
         self.window_sources[index] = source;
     }
@@ -678,7 +692,7 @@ pub const NullPlatform = struct {
     fn setWebViewFrame(context: ?*anyopaque, window_id: WindowId, label: []const u8, frame: geometry.RectF) anyerror!void {
         const self: *NullPlatform = @ptrCast(@alignCast(context.?));
         if (std.mem.eql(u8, label, "main")) {
-            _ = self.findWindowIndex(window_id) orelse if (window_id == 1) 0 else return error.WindowNotFound;
+            _ = self.findWindowIndex(window_id) orelse return error.WindowNotFound;
             if (!isValidWebViewFrame(frame)) return error.InvalidWebViewOptions;
             return;
         }
@@ -700,7 +714,7 @@ pub const NullPlatform = struct {
     fn setWebViewZoom(context: ?*anyopaque, window_id: WindowId, label: []const u8, zoom: f64) anyerror!void {
         const self: *NullPlatform = @ptrCast(@alignCast(context.?));
         if (std.mem.eql(u8, label, "main")) {
-            _ = self.findWindowIndex(window_id) orelse if (window_id == 1) 0 else return error.WindowNotFound;
+            _ = self.findWindowIndex(window_id) orelse return error.WindowNotFound;
             if (zoom < 0.25 or zoom > 5.0) return error.InvalidWebViewOptions;
             return;
         }
@@ -712,7 +726,7 @@ pub const NullPlatform = struct {
     fn setWebViewLayer(context: ?*anyopaque, window_id: WindowId, label: []const u8, layer: i32) anyerror!void {
         const self: *NullPlatform = @ptrCast(@alignCast(context.?));
         if (std.mem.eql(u8, label, "main")) {
-            _ = self.findWindowIndex(window_id) orelse if (window_id == 1) 0 else return error.WindowNotFound;
+            _ = self.findWindowIndex(window_id) orelse return error.WindowNotFound;
             return;
         }
         const index = self.findWebViewIndex(window_id, label) orelse return error.WebViewNotFound;
@@ -848,6 +862,30 @@ test "null platform records bridge response window routing" {
     try std.testing.expectEqualStrings("{\"ok\":true}", null_platform.lastBridgeResponse());
 }
 
+test "webview bridge fallback only routes main responses" {
+    const Recorder = struct {
+        window_id: WindowId = 0,
+        response: []const u8 = "",
+
+        fn completeWindow(context: ?*anyopaque, window_id: WindowId, response: []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.window_id = window_id;
+            self.response = response;
+        }
+    };
+
+    var recorder: Recorder = .{};
+    const services = PlatformServices{
+        .context = &recorder,
+        .complete_window_bridge_fn = Recorder.completeWindow,
+    };
+
+    try services.completeWebViewBridge(3, "main", "{\"ok\":true}");
+    try std.testing.expectEqual(@as(WindowId, 3), recorder.window_id);
+    try std.testing.expectEqualStrings("{\"ok\":true}", recorder.response);
+    try std.testing.expectError(error.UnsupportedService, services.completeWebViewBridge(3, "preview", "{\"ok\":true}"));
+}
+
 test "null platform records webview lifecycle" {
     var null_platform = NullPlatform.init(.{});
     const services = null_platform.platform().services;
@@ -871,6 +909,20 @@ test "null platform records webview lifecycle" {
     try std.testing.expectEqualStrings("https://example.org", null_platform.webviews[0].url);
     try services.closeWebView(1, "preview");
     try std.testing.expectEqual(@as(usize, 0), null_platform.webview_count);
+}
+
+test "null platform requires an open main window for main webview operations" {
+    var null_platform = NullPlatform.init(.{});
+    const services = null_platform.platform().services;
+
+    try std.testing.expectError(error.WindowNotFound, services.setWebViewFrame(1, "main", geometry.RectF.init(0, 0, 320, 240)));
+    try std.testing.expectError(error.WindowNotFound, services.setWebViewZoom(1, "main", 1.25));
+    try std.testing.expectError(error.WindowNotFound, services.setWebViewLayer(1, "main", 10));
+
+    _ = try services.createWindow(.{ .id = 1, .label = "main" });
+    try services.setWebViewFrame(1, "main", geometry.RectF.init(0, 0, 320, 240));
+    try services.setWebViewZoom(1, "main", 1.25);
+    try services.setWebViewLayer(1, "main", 10);
 }
 
 test "webview asset source records production bundle options" {

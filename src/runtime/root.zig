@@ -477,6 +477,7 @@ pub const Runtime = struct {
         self.windows[index].main_frame = geometry.RectF.init(0, 0, self.windows[index].info.frame.width, self.windows[index].info.frame.height);
         self.windows[index].main_frame_set = false;
         self.windows[index].main_layer = 100;
+        self.windows[index].main_zoom = 1.0;
         self.window_count += 1;
         self.next_window_id = @max(self.next_window_id, id + 1);
         return index;
@@ -838,10 +839,12 @@ pub const Runtime = struct {
         if (isMainWebViewLabel(label)) {
             const window_index = self.findWindowIndexById(window_id) orelse return error.WindowNotFound;
             try self.options.platform.services.setWebViewZoom(window_id, label, zoom);
+            self.windows[window_index].main_zoom = zoom;
             return writeWebViewJson(self.mainWebViewInfo(window_index), output);
         }
         const webview_index = self.findWebViewIndex(window_id, label) orelse return error.WebViewNotFound;
         try self.options.platform.services.setWebViewZoom(window_id, label, zoom);
+        self.webviews[webview_index].zoom = zoom;
         return writeWebViewJson(self.webviews[webview_index], output);
     }
 
@@ -941,6 +944,7 @@ pub const Runtime = struct {
                 .window_id = next.window_id,
                 .frame = next.frame,
                 .layer = next.layer,
+                .zoom = next.zoom,
                 .transparent = next.transparent,
                 .bridge_enabled = next.bridge_enabled,
                 .open = next.open,
@@ -971,6 +975,7 @@ pub const Runtime = struct {
             .url = sourceWebViewUrl(window.source),
             .frame = if (window.main_frame_set) window.main_frame else fallback_frame,
             .layer = window.main_layer,
+            .zoom = window.main_zoom,
             .transparent = false,
             .bridge_enabled = true,
             .open = window.info.open,
@@ -1056,6 +1061,7 @@ const RuntimeWindow = struct {
     main_frame: geometry.RectF = geometry.RectF.init(0, 0, 0, 0),
     main_frame_set: bool = false,
     main_layer: i32 = 100,
+    main_zoom: f64 = 1.0,
     label_storage: [platform.max_window_label_bytes]u8 = undefined,
     title_storage: [platform.max_window_title_bytes]u8 = undefined,
     source_storage: [platform.max_window_source_bytes]u8 = undefined,
@@ -1067,6 +1073,7 @@ const RuntimeWebView = struct {
     url: []const u8 = "",
     frame: geometry.RectF = geometry.RectF.init(0, 0, 0, 0),
     layer: i32 = 0,
+    zoom: f64 = 1.0,
     transparent: bool = false,
     bridge_enabled: bool = false,
     open: bool = false,
@@ -1113,12 +1120,13 @@ fn writeWebViewJsonToWriter(webview: RuntimeWebView, writer: anytype) !void {
     try json.writeString(writer, webview.label);
     try writer.print(",\"windowId\":{d},\"url\":", .{webview.window_id});
     try json.writeString(writer, webview.url);
-    try writer.print(",\"x\":{d},\"y\":{d},\"width\":{d},\"height\":{d},\"layer\":{d},\"transparent\":{},\"bridge\":{},\"open\":{}}}", .{
+    try writer.print(",\"x\":{d},\"y\":{d},\"width\":{d},\"height\":{d},\"layer\":{d},\"zoom\":{d},\"transparent\":{},\"bridge\":{},\"open\":{}}}", .{
         webview.frame.x,
         webview.frame.y,
         webview.frame.width,
         webview.frame.height,
         webview.layer,
+        webview.zoom,
         webview.transparent,
         webview.bridge_enabled,
         webview.open,
@@ -1234,8 +1242,7 @@ fn webViewLayerFromJson(payload: []const u8) !i32 {
     if (!std.math.isFinite(layer_value)) return error.InvalidWebViewOptions;
     const max_layer: f32 = @floatFromInt(std.math.maxInt(i32));
     const min_layer: f32 = @floatFromInt(std.math.minInt(i32));
-    if (layer_value > max_layer) return std.math.maxInt(i32);
-    if (layer_value < min_layer) return std.math.minInt(i32);
+    if (layer_value > max_layer or layer_value < min_layer) return error.InvalidWebViewOptions;
     return @as(i32, @intFromFloat(layer_value));
 }
 
@@ -1602,6 +1609,7 @@ test "runtime handles built-in JavaScript webview bridge commands" {
         .window_id = 1,
     } });
     try std.testing.expectEqual(@as(f64, 1.25), harness.null_platform.webviews[0].zoom);
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"zoom\":1.25") != null);
 
     try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
         .bytes = "{\"id\":\"5\",\"command\":\"zero-native.webview.setLayer\",\"payload\":{\"label\":\"preview\",\"layer\":10}}",
@@ -1626,6 +1634,7 @@ test "runtime handles built-in JavaScript webview bridge commands" {
     } });
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"label\":\"main\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"height\":80") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"zoom\":1") != null);
 
     try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
         .bytes = "{\"id\":\"8\",\"command\":\"zero-native.webview.setZoom\",\"payload\":{\"label\":\"main\",\"zoom\":1.1}}",
@@ -1634,6 +1643,7 @@ test "runtime handles built-in JavaScript webview bridge commands" {
     } });
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"label\":\"main\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"height\":80") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"zoom\":1.1") != null);
 
     try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
         .bytes = "{\"id\":\"9\",\"command\":\"zero-native.webview.list\",\"payload\":{}}",
@@ -1774,6 +1784,14 @@ test "runtime validates webview bridge commands" {
 
     try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
         .bytes = "{\"id\":\"invalid-layer\",\"command\":\"zero-native.webview.create\",\"payload\":{\"label\":\"bad-layer\",\"url\":\"https://example.com\",\"frame\":{\"width\":300,\"height\":200},\"layer\":1e1000}}",
+        .origin = "zero://inline",
+        .window_id = 1,
+    } });
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "WebView options are invalid") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"invalid_request\"") != null);
+
+    try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
+        .bytes = "{\"id\":\"out-of-range-layer\",\"command\":\"zero-native.webview.create\",\"payload\":{\"label\":\"bad-layer-range\",\"url\":\"https://example.com\",\"frame\":{\"width\":300,\"height\":200},\"layer\":100000000000000000000}}",
         .origin = "zero://inline",
         .window_id = 1,
     } });

@@ -157,7 +157,11 @@ async function syncBrowserViewport() {
 async function updateChromeOverlay() {
   var frame = chromeFrame();
   await window.zero.webviews.setFrame({ label: "main", frame: frame });
-  await window.zero.webviews.setLayer({ label: "main", layer: CHROME_WEBVIEW_LAYER });
+  try {
+    await window.zero.webviews.setLayer({ label: "main", layer: CHROME_WEBVIEW_LAYER });
+  } catch (error) {
+    console.warn("Main WebView layering is not supported on this backend", error);
+  }
 }
 
 function updateHistoryButtons() {

@@ -262,8 +262,8 @@ fn completeWindowBridge(context: ?*anyopaque, window_id: platform_mod.WindowId, 
 }
 
 fn completeWebViewBridge(context: ?*anyopaque, window_id: platform_mod.WindowId, webview_label: []const u8, response: []const u8) anyerror!void {
-    const self: *WindowsPlatform = @ptrCast(@alignCast(context.?));
-    zero_native_windows_bridge_respond_webview(self.host, window_id, webview_label.ptr, webview_label.len, response.ptr, response.len);
+    if (std.mem.eql(u8, webview_label, "main")) return completeWindowBridge(context, window_id, response);
+    return error.UnsupportedWebViewBridge;
 }
 
 fn emitWindowEvent(context: ?*anyopaque, window_id: platform_mod.WindowId, name: []const u8, detail_json: []const u8) anyerror!void {
@@ -312,6 +312,7 @@ fn setWebViewFrame(context: ?*anyopaque, window_id: platform_mod.WindowId, label
 
 fn navigateWebView(context: ?*anyopaque, window_id: platform_mod.WindowId, label: []const u8, url: []const u8) anyerror!void {
     const self: *WindowsPlatform = @ptrCast(@alignCast(context.?));
+    if (std.mem.eql(u8, label, "main")) return error.InvalidWebViewOptions;
     if (zero_native_windows_navigate_webview(self.host, window_id, label.ptr, label.len, url.ptr, url.len) == 0) return error.WebViewNotFound;
 }
 
@@ -329,6 +330,7 @@ fn setWebViewLayer(context: ?*anyopaque, window_id: platform_mod.WindowId, label
 
 fn closeWebView(context: ?*anyopaque, window_id: platform_mod.WindowId, label: []const u8) anyerror!void {
     const self: *WindowsPlatform = @ptrCast(@alignCast(context.?));
+    if (std.mem.eql(u8, label, "main")) return error.InvalidWebViewOptions;
     if (zero_native_windows_close_webview(self.host, window_id, label.ptr, label.len) == 0) return error.WebViewNotFound;
 }
 

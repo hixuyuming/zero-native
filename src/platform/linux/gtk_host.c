@@ -155,16 +155,18 @@ static void zero_native_apply_webview_frame(zero_native_gtk_webview_t *webview) 
 
 static void zero_native_reorder_webviews(zero_native_gtk_window_t *win) {
     if (!win || !win->stack_root) return;
+    int placed[ZERO_NATIVE_MAX_WEBVIEWS] = {0};
     GtkWidget *previous = NULL;
     for (int pass = 0; pass < win->webview_count; pass++) {
         int best = -1;
         for (int i = 0; i < win->webview_count; i++) {
             if (!win->webviews[i].web_view) continue;
-            if (previous && GTK_WIDGET(win->webviews[i].web_view) == previous) continue;
+            if (placed[i]) continue;
             if (best < 0 || win->webviews[i].layer < win->webviews[best].layer) best = i;
         }
         if (best < 0) break;
         gtk_widget_insert_after(GTK_WIDGET(win->webviews[best].web_view), GTK_WIDGET(win->stack_root), previous);
+        placed[best] = 1;
         previous = GTK_WIDGET(win->webviews[best].web_view);
     }
 }

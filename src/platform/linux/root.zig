@@ -1,3 +1,4 @@
+const std = @import("std");
 const geometry = @import("geometry");
 const platform_mod = @import("../root.zig");
 const policy_values = @import("../policy_values.zig");
@@ -358,28 +359,44 @@ fn createWebView(context: ?*anyopaque, options: platform_mod.WebViewOptions) any
 
 fn setWebViewFrame(context: ?*anyopaque, window_id: platform_mod.WindowId, label: []const u8, frame: geometry.RectF) anyerror!void {
     const self: *LinuxPlatform = @ptrCast(@alignCast(context.?));
+    if (self.web_engine == .chromium) {
+        if (std.mem.eql(u8, label, "main")) return error.UnsupportedMainWebViewFrame;
+        return error.UnsupportedChildWebViews;
+    }
     if (zero_native_gtk_set_webview_frame(self.host, window_id, label.ptr, label.len, frame.x, frame.y, frame.width, frame.height) == 0) return error.WebViewNotFound;
 }
 
 fn navigateWebView(context: ?*anyopaque, window_id: platform_mod.WindowId, label: []const u8, url: []const u8) anyerror!void {
     const self: *LinuxPlatform = @ptrCast(@alignCast(context.?));
+    if (self.web_engine == .chromium) {
+        if (std.mem.eql(u8, label, "main")) return error.InvalidWebViewOptions;
+        return error.UnsupportedChildWebViews;
+    }
     if (zero_native_gtk_navigate_webview(self.host, window_id, label.ptr, label.len, url.ptr, url.len) == 0) return error.WebViewNotFound;
 }
 
 fn setWebViewZoom(context: ?*anyopaque, window_id: platform_mod.WindowId, label: []const u8, zoom: f64) anyerror!void {
     const self: *LinuxPlatform = @ptrCast(@alignCast(context.?));
-    if (self.web_engine == .chromium) return error.UnsupportedChildWebViews;
+    if (self.web_engine == .chromium) {
+        if (std.mem.eql(u8, label, "main")) return error.UnsupportedMainWebViewZoom;
+        return error.UnsupportedChildWebViews;
+    }
     if (zero_native_gtk_set_webview_zoom(self.host, window_id, label.ptr, label.len, zoom) == 0) return error.WebViewNotFound;
 }
 
 fn setWebViewLayer(context: ?*anyopaque, window_id: platform_mod.WindowId, label: []const u8, layer: i32) anyerror!void {
     const self: *LinuxPlatform = @ptrCast(@alignCast(context.?));
+    if (std.mem.eql(u8, label, "main")) return error.UnsupportedMainWebViewLayer;
     if (self.web_engine == .chromium) return error.UnsupportedChildWebViews;
     if (zero_native_gtk_set_webview_layer(self.host, window_id, label.ptr, label.len, layer) == 0) return error.WebViewNotFound;
 }
 
 fn closeWebView(context: ?*anyopaque, window_id: platform_mod.WindowId, label: []const u8) anyerror!void {
     const self: *LinuxPlatform = @ptrCast(@alignCast(context.?));
+    if (self.web_engine == .chromium) {
+        if (std.mem.eql(u8, label, "main")) return error.InvalidWebViewOptions;
+        return error.UnsupportedChildWebViews;
+    }
     if (zero_native_gtk_close_webview(self.host, window_id, label.ptr, label.len) == 0) return error.WebViewNotFound;
 }
 

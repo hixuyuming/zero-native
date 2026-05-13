@@ -59,6 +59,7 @@ export interface ZeroNativeWebViewInfo {
   width: number;
   height: number;
   layer: number;
+  zoom: number;
   transparent: boolean;
   bridge: boolean;
   open: boolean;
